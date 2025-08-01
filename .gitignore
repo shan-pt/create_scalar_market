@@ -1,0 +1,26 @@
+# .env file (secrets)
+.env
+
+# Node.js
+node_modules/
+dist/
+build/
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+*.log
+logs/
+
+# OS-specific
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Optional for Hardhat or Ethers.js
+artifacts/
+cache/
+coverage/
