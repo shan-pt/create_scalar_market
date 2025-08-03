@@ -1,4 +1,5 @@
 import { JsonRpcProvider, Wallet, Contract } from "ethers";
+
 import { parseUnits, ZeroAddress } from "ethers";
 import * as fs from "fs";
 import * as dotenv from "dotenv";
@@ -17,7 +18,7 @@ async function main() {
   for (const url of repos) {
     const name = url.split("/").slice(-2).join("/");
     const marketParams = {
-      marketName: `Originally..:  ${name}`, // What will be the originality score assigned by the jurors of ${name}?
+      marketName: `[https://cryptopond.xyz/modelfactory/detail/2564617] What will be the originality score assigned by the jurors to github.com/${name} ?`,
       outcomes: ["UP", "DOWN"], 
       questionStart: "",
       questionEnd: "",
@@ -27,15 +28,17 @@ async function main() {
       category: "AI Evaluation",
       lang: "en",
       lowerBound: 0,
-      upperBound: 100,
-      minBond: parseUnits("0.01", 18),
-     openingTime: Math.floor(new Date("2025-09-07T00:00:00Z").getTime() / 1000), //Sep 7, 2025, 00:00 UTC
-      tokenNames: [`UP_${name}`, `DOWN_${name}`]
+      upperBound: 1,
+      minBond: parseUnits("10", 18),
+      openingTime: Math.floor(new Date("2025-09-07T00:00:00Z").getTime() / 1000),
+      tokenNames: ["UP", "DOWN"]
     };
 
     const tx = await contract.createScalarMarket(marketParams);
     console.log(`Market created for ${name}: ${tx.hash}`);
-    await tx.wait();
+    const receipt = await tx.wait();
+    console.log("Market created successfully:", receipt);
+ 
   }
 }
 
