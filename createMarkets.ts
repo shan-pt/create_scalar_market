@@ -1,44 +1,118 @@
 import { JsonRpcProvider, Wallet, Contract } from "ethers";
-
-import { parseUnits, ZeroAddress } from "ethers";
+import { ZeroAddress } from "ethers";
 import * as fs from "fs";
 import * as dotenv from "dotenv";
 dotenv.config();
 
 const MARKET_FACTORY = "0x83183DA839Ce8228E31Ae41222EaD9EDBb5cDcf1";
-const ABI = [{"inputs":[{"internalType":"address","name":"_market","type":"address"},{"internalType":"address","name":"_arbitrator","type":"address"},{"internalType":"contract IRealityETH_v3_0","name":"_realitio","type":"address"},{"internalType":"contract IWrapped1155Factory","name":"_wrapped1155Factory","type":"address"},{"internalType":"contract IConditionalTokens","name":"_conditionalTokens","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"contract RealityProxy","name":"_realityProxy","type":"address"},{"internalType":"uint32","name":"_questionTimeout","type":"uint32"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"ERC1167FailedCreateClone","type":"error"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"market","type":"address"},{"indexed":false,"internalType":"string","name":"marketName","type":"string"},{"indexed":false,"internalType":"address","name":"parentMarket","type":"address"},{"indexed":false,"internalType":"bytes32","name":"conditionId","type":"bytes32"},{"indexed":false,"internalType":"bytes32","name":"questionId","type":"bytes32"},{"indexed":false,"internalType":"bytes32[]","name":"questionsIds","type":"bytes32[]"}],"name":"NewMarket","type":"event"},{"inputs":[],"name":"allMarkets","outputs":[{"internalType":"address[]","name":"","type":"address[]"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"arbitrator","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"collateralToken","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"conditionalTokens","outputs":[{"internalType":"contract IConditionalTokens","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"components":[{"internalType":"string","name":"marketName","type":"string"},{"internalType":"string[]","name":"outcomes","type":"string[]"},{"internalType":"string","name":"questionStart","type":"string"},{"internalType":"string","name":"questionEnd","type":"string"},{"internalType":"string","name":"outcomeType","type":"string"},{"internalType":"uint256","name":"parentOutcome","type":"uint256"},{"internalType":"address","name":"parentMarket","type":"address"},{"internalType":"string","name":"category","type":"string"},{"internalType":"string","name":"lang","type":"string"},{"internalType":"uint256","name":"lowerBound","type":"uint256"},{"internalType":"uint256","name":"upperBound","type":"uint256"},{"internalType":"uint256","name":"minBond","type":"uint256"},{"internalType":"uint32","name":"openingTime","type":"uint32"},{"internalType":"string[]","name":"tokenNames","type":"string[]"}],"internalType":"struct MarketFactory.CreateMarketParams","name":"params","type":"tuple"}],"name":"createCategoricalMarket","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"components":[{"internalType":"string","name":"marketName","type":"string"},{"internalType":"string[]","name":"outcomes","type":"string[]"},{"internalType":"string","name":"questionStart","type":"string"},{"internalType":"string","name":"questionEnd","type":"string"},{"internalType":"string","name":"outcomeType","type":"string"},{"internalType":"uint256","name":"parentOutcome","type":"uint256"},{"internalType":"address","name":"parentMarket","type":"address"},{"internalType":"string","name":"category","type":"string"},{"internalType":"string","name":"lang","type":"string"},{"internalType":"uint256","name":"lowerBound","type":"uint256"},{"internalType":"uint256","name":"upperBound","type":"uint256"},{"internalType":"uint256","name":"minBond","type":"uint256"},{"internalType":"uint32","name":"openingTime","type":"uint32"},{"internalType":"string[]","name":"tokenNames","type":"string[]"}],"internalType":"struct MarketFactory.CreateMarketParams","name":"params","type":"tuple"}],"name":"createMultiCategoricalMarket","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"components":[{"internalType":"string","name":"marketName","type":"string"},{"internalType":"string[]","name":"outcomes","type":"string[]"},{"internalType":"string","name":"questionStart","type":"string"},{"internalType":"string","name":"questionEnd","type":"string"},{"internalType":"string","name":"outcomeType","type":"string"},{"internalType":"uint256","name":"parentOutcome","type":"uint256"},{"internalType":"address","name":"parentMarket","type":"address"},{"internalType":"string","name":"category","type":"string"},{"internalType":"string","name":"lang","type":"string"},{"internalType":"uint256","name":"lowerBound","type":"uint256"},{"internalType":"uint256","name":"upperBound","type":"uint256"},{"internalType":"uint256","name":"minBond","type":"uint256"},{"internalType":"uint32","name":"openingTime","type":"uint32"},{"internalType":"string[]","name":"tokenNames","type":"string[]"}],"internalType":"struct MarketFactory.CreateMarketParams","name":"params","type":"tuple"}],"name":"createMultiScalarMarket","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"components":[{"internalType":"string","name":"marketName","type":"string"},{"internalType":"string[]","name":"outcomes","type":"string[]"},{"internalType":"string","name":"questionStart","type":"string"},{"internalType":"string","name":"questionEnd","type":"string"},{"internalType":"string","name":"outcomeType","type":"string"},{"internalType":"uint256","name":"parentOutcome","type":"uint256"},{"internalType":"address","name":"parentMarket","type":"address"},{"internalType":"string","name":"category","type":"string"},{"internalType":"string","name":"lang","type":"string"},{"internalType":"uint256","name":"lowerBound","type":"uint256"},{"internalType":"uint256","name":"upperBound","type":"uint256"},{"internalType":"uint256","name":"minBond","type":"uint256"},{"internalType":"uint32","name":"openingTime","type":"uint32"},{"internalType":"string[]","name":"tokenNames","type":"string[]"}],"internalType":"struct MarketFactory.CreateMarketParams","name":"params","type":"tuple"}],"name":"createScalarMarket","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"market","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"marketCount","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"markets","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"questionTimeout","outputs":[{"internalType":"uint32","name":"","type":"uint32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"realitio","outputs":[{"internalType":"contract IRealityETH_v3_0","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"realityProxy","outputs":[{"internalType":"contract RealityProxy","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"wrapped1155Factory","outputs":[{"internalType":"contract IWrapped1155Factory","name":"","type":"address"}],"stateMutability":"view","type":"function"}];
+
+// Simplified ABI for clarity
+const ABI = [
+  {
+    inputs: [
+      {
+        components: [
+          { internalType: "string", name: "marketName", type: "string" },
+          { internalType: "string[]", name: "outcomes", type: "string[]" },
+          { internalType: "string", name: "questionStart", type: "string" },
+          { internalType: "string", name: "questionEnd", type: "string" },
+          { internalType: "string", name: "outcomeType", type: "string" },
+          { internalType: "uint256", name: "parentOutcome", type: "uint256" },
+          { internalType: "address", name: "parentMarket", type: "address" },
+          { internalType: "string", name: "category", type: "string" },
+          { internalType: "string", name: "lang", type: "string" },
+          { internalType: "uint256", name: "lowerBound", type: "uint256" },
+          { internalType: "uint256", name: "upperBound", type: "uint256" },
+          { internalType: "uint256", name: "minBond", type: "uint256" },
+          { internalType: "uint32", name: "openingTime", type: "uint32" },
+          { internalType: "string[]", name: "tokenNames", type: "string[]" }
+        ],
+        internalType: "struct MarketFactory.CreateMarketParams",
+        name: "params",
+        type: "tuple"
+      }
+    ],
+    name: "createScalarMarket",
+    outputs: [{ internalType: "address", name: "", type: "address" }],
+    stateMutability: "nonpayable",
+    type: "function"
+  }
+];
+
+// 🔄 Token name generation with uniqueness enforcement
+function generateTokenNamesFromUrls(urls: string[]): [string, string, string][] {
+  const used = new Set<string>();
+  const tokenNames: [string, string, string][] = [];
+
+  for (const url of urls) {
+    const [org, repo] = url.split("/").slice(-2);
+    let base = "";
+
+    if (org.toLowerCase() === "ethereum") {
+      base = repo.slice(0, 8).toUpperCase();
+    } else if (org.toLowerCase().includes("vyperlang")) {
+      base = repo.slice(0, 8).toLowerCase();
+    } else if (org.toLowerCase().includes("hyperledger")) {
+      base = (repo + "web").slice(0, 8).toLowerCase();
+    } else {
+      base = (org + repo).replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toUpperCase();
+    }
+
+    let unique = base;
+    let suffix = 1;
+    while (used.has(unique)) {
+      const next = base.slice(0, 8 - suffix.toString().length) + suffix;
+      unique = next;
+      suffix++;
+    }
+
+    used.add(unique);
+    tokenNames.push([`${org}/${repo}`, `${unique}_D`, `${unique}_U`]);
+  }
+
+  return tokenNames;
+}
 
 async function main() {
+  const DRY_RUN = true; // Set to false to actually create markets, now just testing for token Names up and down tokens.
+
   const provider = new JsonRpcProvider(process.env.RPC_URL);
   const wallet = new Wallet(process.env.PRIVATE_KEY!, provider);
   const contract = new Contract(MARKET_FACTORY, ABI, wallet);
 
   const repos: string[] = JSON.parse(fs.readFileSync("seedRepos.json", "utf-8"));
+  const tokens = generateTokenNamesFromUrls(repos);
 
-  for (const url of repos) {
-    const name = url.split("/").slice(-2).join("/");
+  for (const [repoPath, downToken, upToken] of tokens) {
     const marketParams = {
-      marketName: `[https://cryptopond.xyz/modelfactory/detail/2564617] What will be the originality score assigned by the jurors to github.com/${name} ?`,
-      outcomes: ["UP", "DOWN"], 
+      marketName: `[https://cryptopond.xyz/modelfactory/detail/2564617] What will be the originality score assigned by the jurors to github.com/${repoPath}? [score]`,
+      outcomes: ["DOWN", "UP"],
       questionStart: "",
       questionEnd: "",
-      outcomeType: "scalar",
-      parentOutcome: 0,
+      outcomeType: "",
+      parentOutcome: 0n,
       parentMarket: ZeroAddress,
-      category: "AI Evaluation",
-      lang: "en",
-      lowerBound: 0,
-      upperBound: 1,
-      minBond: parseUnits("10", 18),
-      openingTime: Math.floor(new Date("2025-09-07T00:00:00Z").getTime() / 1000),
-      tokenNames: ["UP", "DOWN"]
+      category: "misc",
+      lang: "en_US",
+      lowerBound: 0n,
+      upperBound: 1000000000000000000n,
+      minBond: 10000000000000000000n,
+      openingTime: 1757212800,
+      tokenNames: [downToken, upToken]
     };
 
-    const tx = await contract.createScalarMarket(marketParams);
-    console.log(`Market created for ${name}: ${tx.hash}`);
-    const receipt = await tx.wait();
-    console.log("Market created successfully:", receipt);
- 
+    if (DRY_RUN) {
+      console.log(`[DRY RUN] Repo: ${repoPath}, Tokens: [${downToken}, ${upToken}]`);
+    } else {
+      try {
+        const tx = await contract.createScalarMarket(marketParams);
+        console.log(`Market created for ${repoPath}: ${tx.hash}`);
+        const receipt = await tx.wait();
+        console.log("✓ Market created:", receipt.contractAddress ?? receipt.transactionHash);
+      } catch (error) {
+        console.error(`✗ Failed for ${repoPath}:`, error);
+      }
+    }
   }
 }
 
