@@ -29,7 +29,7 @@ const SEER_GNOSIS_ROUTER = getAddress(
 );
 const THEGRAPH_URL =
   "https://gateway.thegraph.com/api/subgraphs/id/B4vyRqJaSHD8dRDb3BFRoAzuBK18c1QQcXq94JbxDxWH";
-const THEGRAPH_API_KEY = "612d36eca246055bd68cf6bc1dee1e54";
+const THEGRAPH_API_KEY = process.env.GRAPH_API_KEY;
 
 // AlgebraFactory address on Gnosis Chain
 const ALGEBRA_FACTORY_ADDRESS = getAddress(
@@ -43,11 +43,6 @@ const SWAPR_POSITION_MANAGER_ADDRESS = getAddress(
 
 // sDAI address on Gnosis Chain
 const SDAI_ADDRESS = getAddress("0xaf204776c7245bF4147c2612BF6e5972Ee483701");
-
-// Load the full Gnosis Router ABI
-const ROUTER_ABI = JSON.parse(
-  fs.readFileSync("gnosis-router-abi.json", "utf-8")
-);
 
 // ERC20 ABI for token interactions
 const ERC20_ABI = [
@@ -78,6 +73,9 @@ const POSITION_MANAGER_ABI = [
   "function multicall(bytes[] data) payable returns (bytes[] results)",
 ];
 
+const SEER_GNOSIS_ROUTER_ABI = [
+  "function splitPosition(address,address,uint256) external",
+];
 async function getMarketTokens(marketAddress: string): Promise<string[]> {
   const query = `
     {
@@ -417,7 +415,11 @@ export async function addLiquidity(
     }
 
     // Split sDAI position using splitPosition
-    const router = new Contract(SEER_GNOSIS_ROUTER, ROUTER_ABI, wallet);
+    const router = new Contract(
+      SEER_GNOSIS_ROUTER,
+      SEER_GNOSIS_ROUTER_ABI,
+      wallet
+    );
     const tx = await router.splitPosition(
       SDAI_ADDRESS,
       marketAddress,
