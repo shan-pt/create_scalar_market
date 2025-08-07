@@ -1,5 +1,6 @@
-import { JsonRpcProvider, Wallet, Contract } from "ethers";
-import { ZeroAddress } from "ethers";
+import { providers, Wallet, Contract } from "ethers";
+import { BigNumber } from "ethers";
+const ZeroAddress = "0x0000000000000000000000000000000000000000";
 import * as fs from "fs";
 import * as dotenv from "dotenv";
 dotenv.config();
@@ -76,7 +77,7 @@ function generateTokenNamesFromUrls(urls: string[]): [string, string, string][] 
 async function main() {
   const DRY_RUN = true; // Set to false to actually create markets, now just testing for token Names up and down tokens.
 
-  const provider = new JsonRpcProvider(process.env.RPC_URL);
+  const provider = new providers.JsonRpcProvider(process.env.RPC_URL);
   const wallet = new Wallet(process.env.PRIVATE_KEY!, provider);
   const contract = new Contract(MARKET_FACTORY, ABI, wallet);
 
@@ -90,13 +91,13 @@ async function main() {
       questionStart: "",
       questionEnd: "",
       outcomeType: "",
-      parentOutcome: 0n,
+      parentOutcome: BigNumber.from("0"),
       parentMarket: ZeroAddress,
       category: "misc",
       lang: "en_US",
-      lowerBound: 0n,
-      upperBound: 1000000000000000000n,
-      minBond: 10000000000000000000n,
+      lowerBound: BigNumber.from("0"),
+      upperBound: BigNumber.from("1000000000000000000"),
+      minBond: BigNumber.from("10000000000000000000"),
       openingTime: 1757212800,
       tokenNames: [downToken, upToken]
     };

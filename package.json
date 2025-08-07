@@ -1,19 +1,29 @@
 {
   "dependencies": {
+    "@swapr/sdk": "^1.12.0",
+    "@uniswap/sdk-core": "^7.7.2",
+    "@uniswap/v3-sdk": "^3.25.2",
     "axios": "^1.11.0",
     "dotenv": "^17.2.1",
-    "ethers": "^6.15.0",
+    "ethers": "^5.8.0",
     "fs": "^0.0.1-security",
+    "graphql": "^16.11.0",
+    "graphql-tag": "^2.12.6",
     "web3.storage": "^4.5.5"
   },
   "name": "create_scalar_market",
   "version": "1.0.0",
   "main": "index.js",
   "devDependencies": {
+    "@types/node": "^24.2.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "add-liquidity": "npx ts-node index.ts",
+    "build": "npx tsc",
+    "start": "node dist/index.js"
   },
   "keywords": [],
   "author": "",
