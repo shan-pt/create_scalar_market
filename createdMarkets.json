@@ -1,10 +1,18 @@
 [
   {
-    "repo": "test01/test007",
-    "marketAddress": "0x7521b1dc04aab1dc5650b4152947011770b2a406"
+    "repo": "test1/repo1",
+    "marketAddress": "0x930cef266124f4a3ca0516eb7641f7b60962a7b9"
   },
   {
-    "repo": "test01/test006",
-    "marketAddress": "0x2b93f5b5eba16a12d6a7af099fa0b9e38f2e13d5"
+    "repo": "test3/repo3",
+    "marketAddress": "0x759f4ba4d98bf9c1acdfcc06aff87d28207d0bd3"
+  },
+  {
+    "repo": "test4/repo4",
+    "marketAddress": "0x7eb14e34674878951ede3872b5d0b1c240e1caa9"
+  },
+  {
+    "repo": "test5/repo5",
+    "marketAddress": "0x9cc47c99835cd336ca1a7049b6aeada3cb5e5218"
   }
 ]

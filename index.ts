@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import * as fs from "fs";
 import { addLiquidity } from "./addLiquidity";
 
 interface LiquidityRange {
@@ -9,7 +10,28 @@ interface LiquidityRange {
 
 async function main() {
   const args = process.argv.slice(2);
-  
+
+  // If --all is passed, loop through all market addresses in createdMarkets.json
+  if (args[0] === "--all") {
+    const amount = args[1] ? parseFloat(args[1]) : 0.005; // default amount
+    const lowerBound = args[2] ? parseFloat(args[2]) : 0.05;
+    const upperBound = args[3] ? parseFloat(args[3]) : 0.95;
+    const range: LiquidityRange = { lowerBound, upperBound };
+
+    const markets = JSON.parse(fs.readFileSync("createdMarkets.json", "utf-8"));
+    for (const entry of markets) {
+      const marketAddress = entry.marketAddress;
+      console.log(`\n🚀 Adding liquidity to market: ${marketAddress}`);
+      try {
+        await addLiquidity(marketAddress, amount, range);
+        console.log("✅ Successfully added liquidity!");
+      } catch (error) {
+        console.error(`❌ Failed for ${marketAddress}:`, error);
+      }
+    }
+    process.exit(0);
+  }
+
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
     console.log(`
 Usage: npm run add-liquidity <marketAddress> <amount> [lowerBound] [upperBound]

@@ -91,7 +91,7 @@ async function main () {
 
   for (const [repoPath, downToken, upToken] of tokens) {
     const marketParams = {
-      marketName: `[https://cryptopond.xyz/modelfactory/detail/2564617] What will be the originality score assigned by the jurors to github.com/${repoPath}? [score]`,
+      marketName: `[https://cryptopond.xyz/modelfactory/detail/2564617] What will be the originality score assigned by the jurors to github.com/${repoPath}? (4 decimals) [score]`,
       outcomes: ['DOWN', 'UP'],
       questionStart: '',
       questionEnd: '',
@@ -104,7 +104,7 @@ async function main () {
       upperBound: BigNumber.from('1000000000000000000'),
       minBond: BigNumber.from('10000000000000000000'),
       openingTime: 1757212800,
-      tokenNames: [downToken, upToken]
+      tokenNames: ['DOWN', 'UP'],
     }
 
     if (DRY_RUN) {
@@ -127,7 +127,7 @@ async function main () {
           const marketAddress = '0x' + event.topics[1].slice(26)
           console.log('✓ Market created at address:', marketAddress)
 
-               // Save to createdMarkets.json
+          // Save to createdMarkets.json
           const file = 'createdMarkets.json'
           let arr: any[] = []
           if (fs.existsSync(file)) {
@@ -135,7 +135,15 @@ async function main () {
           }
           arr.push({ repo: repoPath, marketAddress })
           fs.writeFileSync(file, JSON.stringify(arr, null, 2))
-        
+
+          // Save to marketsLink.json
+          const linkFile = 'marketsLink.json'
+          let links: string[] = []
+          if (fs.existsSync(linkFile)) {
+            links = JSON.parse(fs.readFileSync(linkFile, 'utf-8'))
+          }
+          links.push(`app.seer.pm/markets/100/${marketAddress}`)
+          fs.writeFileSync(linkFile, JSON.stringify(links, null, 2))
         } else {
           console.log(
             '✓ Market created, but event not found. Tx hash:',
