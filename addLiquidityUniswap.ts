@@ -2,9 +2,8 @@ import { providers, Wallet, Contract, BigNumber } from "ethers";
 import { parseEther, getAddress } from "ethers/lib/utils";
 import * as fs from "fs";
 import * as dotenv from "dotenv";
-import { ChainId, Token } from "@swapr/sdk";
-import { encodeSqrtRatioX96 as uniEncodeSqrtRatioX96 } from "@uniswap/v3-sdk";
-import JSBI from "jsbi";
+import { Token } from "@uniswap/sdk-core";
+import { encodeSqrtRatioX96, TickMath, nearestUsableTick, Pool, Position, NonfungiblePositionManager } from "@uniswap/v3-sdk";
 dotenv.config();
 
 interface LiquidityRange {
@@ -20,26 +19,26 @@ const priceToTick = (price: number): number => Math.log(price) / LN_1_0001;
 
 //////////
 
-// Swapr constants
-const CHAIN_ID = ChainId.GNOSIS; // Gnosis Chain
+// Uniswap V3 constants for Gnosis Chain
+const CHAIN_ID = 100; // Gnosis Chain ID
 
-// Get Gnosis Router address from Swapr SDK instead of hardcoding
+// Uniswap V3 addresses on Gnosis Chain (verified)
+const UNISWAP_V3_FACTORY_ADDRESS = getAddress(
+  "0xf78031CBCA409F2FB6876BDFDBc1b2df24cF9bEf" // Uniswap V3 Factory on Gnosis Chain
+);
+
+const UNISWAP_V3_POSITION_MANAGER_ADDRESS = getAddress(
+  "0xCd03e2e276F6EEdD424d41314437531F665187b9" // Uniswap V3 Position Manager on Gnosis Chain
+);
+
+// Keep the same router for splitting positions
 const SEER_GNOSIS_ROUTER = getAddress(
   "0xeC9048b59b3467415b1a38F63416407eA0c70fB8"
 );
+
 const THEGRAPH_URL =
   "https://gateway.thegraph.com/api/subgraphs/id/B4vyRqJaSHD8dRDb3BFRoAzuBK18c1QQcXq94JbxDxWH";
 const THEGRAPH_API_KEY = process.env.GRAPH_API_KEY;
-
-// AlgebraFactory address on Gnosis Chain
-const ALGEBRA_FACTORY_ADDRESS = getAddress(
-  "0xA0864cCA6E114013AB0e27cbd5B6f4c8947da766"
-);
-
-// Swapr V3 Position Manager on Gnosis Chain
-const SWAPR_POSITION_MANAGER_ADDRESS = getAddress(
-  "0x91fd594c46d8b01e62dbdebed2401dde01817834"
-);
 
 // sDAI address on Gnosis Chain
 const SDAI_ADDRESS = getAddress("0xaf204776c7245bF4147c2612BF6e5972Ee483701");
@@ -50,32 +49,35 @@ const ERC20_ABI = [
   "function transfer(address, uint256) returns (bool)",
   "function approve(address, uint256) returns (bool)",
   "function allowance(address, address) view returns (uint256)",
+  "function decimals() view returns (uint8)",
 ];
 
-// Swapr V3 Factory ABI (minimal)
+// Uniswap V3 Factory ABI (minimal)
 const FACTORY_ABI = [
-  "function poolByPair(address, address) view returns (address)",
+  "function getPool(address, address, uint24) view returns (address)",
+  "function createPool(address, address, uint24) returns (address)",
 ];
 
-// Algebra Pool ABI (minimal) - uses globalState instead of slot0
+// Uniswap V3 Pool ABI (minimal)
 const POOL_ABI = [
-  "function globalState() view returns (uint160 price, int24 tick, uint16 lastFee, uint8 pluginConfig, uint16 communityFee, bool unlocked)",
+  "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
   "function liquidity() view returns (uint128)",
   "function tickSpacing() view returns (int24)",
   "function fee() view returns (uint24)",
   "function initialize(uint160) external",
 ];
 
-// NonfungiblePositionManager ABI (minimal) - Algebra version
+// Uniswap V3 NonfungiblePositionManager ABI (minimal)
 const POSITION_MANAGER_ABI = [
-  "function mint((address,address,int24,int24,uint256,uint256,uint256,uint256,address,uint256)) payable returns (uint256,uint128,uint256,uint256)",
-  "function createAndInitializePoolIfNecessary(address,address,uint160) payable returns (address)",
+  "function mint((address,address,uint24,int24,int24,uint256,uint256,uint256,uint256,address,uint256)) payable returns (uint256,uint128,uint256,uint256)",
+  "function createAndInitializePoolIfNecessary(address,address,uint24,uint160) payable returns (address)",
   "function multicall(bytes[] data) payable returns (bytes[] results)",
 ];
 
 const SEER_GNOSIS_ROUTER_ABI = [
   "function splitPosition(address,address,uint256) external",
 ];
+
 async function getMarketTokens(marketAddress: string): Promise<string[]> {
   const query = `
     {
@@ -110,12 +112,13 @@ async function createPoolWithMulticall(
   wallet: Wallet,
   tokenA: Token,
   tokenB: Token,
-  amountA: any,
-  amountB: any,
-  range: LiquidityRange
+  amountA: BigNumber,
+  amountB: BigNumber,
+  range: LiquidityRange,
+  fee: number = 3000 // 0.3% fee tier
 ): Promise<string> {
   const positionManager = new Contract(
-    SWAPR_POSITION_MANAGER_ADDRESS,
+    UNISWAP_V3_POSITION_MANAGER_ADDRESS,
     POSITION_MANAGER_ABI,
     wallet
   );
@@ -128,20 +131,22 @@ async function createPoolWithMulticall(
 
   const PRICE_MIN =
     token1.address.toLowerCase() === SDAI_ADDRESS.toLowerCase()
-      ? 0.05
-      : 1 / 0.95;
+      ? range.lowerBound
+      : 1 / range.upperBound;
   const PRICE_MAX =
     token1.address.toLowerCase() === SDAI_ADDRESS.toLowerCase()
-      ? 0.95
-      : 1 / 0.05;
+      ? range.upperBound
+      : 1 / range.lowerBound;
 
   // Calculate initial price as midpoint
   const midpoint = (PRICE_MIN + PRICE_MAX) / 2;
 
-  const sqrtPriceX96 = uniEncodeSqrtRatioX96(
-    Math.floor(midpoint * 1e18), // num
-    1e18 // den
+  // Use smaller precision to avoid overflow and convert JSBI to BigNumber
+  const sqrtPriceX96JSBI = encodeSqrtRatioX96(
+    Math.floor(midpoint * 1e6), // Use smaller precision
+    1e6
   );
+  const sqrtPriceX96 = BigNumber.from(sqrtPriceX96JSBI.toString());
 
   console.log(
     `Initial pool price: midpoint=${midpoint}, PRICE_MIN=${PRICE_MIN}, PRICE_MAX=${PRICE_MAX}`
@@ -150,33 +155,38 @@ async function createPoolWithMulticall(
   // Encode createAndInitializePoolIfNecessary call
   const createPoolData = positionManager.interface.encodeFunctionData(
     "createAndInitializePoolIfNecessary",
-    [token0.address, token1.address, BigNumber.from(sqrtPriceX96.toString())]
+    [token0.address, token1.address, fee, sqrtPriceX96]
   );
 
   // Calculate ticks for the range with proper token ordering
-  {
-    const rawLower = priceToTick(PRICE_MIN);
-    const rawUpper = priceToTick(PRICE_MAX);
-    const tickSpacing = 60; // hardcoded for createPoolWithMulticall
-    var lowerTick = Math.floor(rawLower / tickSpacing) * tickSpacing;
-    var upperTick = Math.ceil(rawUpper / tickSpacing) * tickSpacing;
+  const rawLower = priceToTick(PRICE_MIN);
+  const rawUpper = priceToTick(PRICE_MAX);
+  const tickSpacing = 60; // Standard for 0.3% fee tier
+  const lowerTick = nearestUsableTick(Math.floor(rawLower), tickSpacing);
+  const upperTick = nearestUsableTick(Math.ceil(rawUpper), tickSpacing);
 
-    console.log(`Token order: ${token0.symbol} < ${token1.symbol}`);
-    console.log(
-      `Price range: ${PRICE_MIN}-${PRICE_MAX}, Ticks: [${lowerTick}, ${upperTick}]`
-    );
-  }
+  console.log(`Token order: ${token0.symbol} < ${token1.symbol}`);
+  console.log(
+    `Price range: ${PRICE_MIN}-${PRICE_MAX}, Ticks: [${lowerTick}, ${upperTick}]`
+  );
 
   const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes from now
+
+  // Determine amounts based on token order
+  const [amount0Desired, amount1Desired] =
+    tokenA.address.toLowerCase() < tokenB.address.toLowerCase()
+      ? [amountA, amountB]
+      : [amountB, amountA];
 
   // Encode mint call
   const mintParams = {
     token0: token0.address,
     token1: token1.address,
+    fee: fee,
     tickLower: lowerTick,
     tickUpper: upperTick,
-    amount0Desired: amountA,
-    amount1Desired: amountB,
+    amount0Desired: amount0Desired,
+    amount1Desired: amount1Desired,
     amount0Min: 0,
     amount1Min: 0,
     recipient: wallet.address,
@@ -187,6 +197,7 @@ async function createPoolWithMulticall(
     [
       mintParams.token0,
       mintParams.token1,
+      mintParams.fee,
       mintParams.tickLower,
       mintParams.tickUpper,
       mintParams.amount0Desired,
@@ -210,17 +221,18 @@ async function createPoolWithMulticall(
   );
 
   // Get the pool address from factory
-  const factory = new Contract(ALGEBRA_FACTORY_ADDRESS, FACTORY_ABI, wallet);
-  return await factory.poolByPair(token0.address, token1.address);
+  const factory = new Contract(UNISWAP_V3_FACTORY_ADDRESS, FACTORY_ABI, wallet);
+  return await factory.getPool(token0.address, token1.address, fee);
 }
 
 async function addLiquidityToPool(
   wallet: Wallet,
   tokenA: Token,
   tokenB: Token,
-  amount0: any,
-  amount1: any,
-  range: LiquidityRange
+  amount0: BigNumber,
+  amount1: BigNumber,
+  range: LiquidityRange,
+  fee: number = 3000 // 0.3% fee tier
 ): Promise<void> {
   // Sort tokens for consistent ordering (lexicographic)
   const [token0, token1] =
@@ -230,12 +242,12 @@ async function addLiquidityToPool(
 
   const PRICE_MIN =
     token1.address.toLowerCase() === SDAI_ADDRESS.toLowerCase()
-      ? 0.05
-      : 1 / 0.95; // token1 / token0
+      ? range.lowerBound
+      : 1 / range.upperBound;
   const PRICE_MAX =
     token1.address.toLowerCase() === SDAI_ADDRESS.toLowerCase()
-      ? 0.95
-      : 1 / 0.05;
+      ? range.upperBound
+      : 1 / range.lowerBound;
 
   const [amountA, amountB] =
     tokenA.address.toLowerCase() < tokenB.address.toLowerCase()
@@ -245,8 +257,8 @@ async function addLiquidityToPool(
   console.log(`Adding liquidity to ${token0.symbol}/${token1.symbol} pool`);
 
   // Get or create pool
-  const factory = new Contract(ALGEBRA_FACTORY_ADDRESS, FACTORY_ABI, wallet);
-  let poolAddress = await factory.poolByPair(token0.address, token1.address);
+  const factory = new Contract(UNISWAP_V3_FACTORY_ADDRESS, FACTORY_ABI, wallet);
+  let poolAddress = await factory.getPool(token0.address, token1.address, fee);
 
   if (poolAddress === "0x0000000000000000000000000000000000000000") {
     console.log("Pool doesn't exist, will create it with multicall...");
@@ -256,13 +268,13 @@ async function addLiquidityToPool(
     const tokenBContract = new Contract(tokenB.address, ERC20_ABI, wallet);
 
     const approveTxA = await tokenAContract.approve(
-      SWAPR_POSITION_MANAGER_ADDRESS,
+      UNISWAP_V3_POSITION_MANAGER_ADDRESS,
       amountA
     );
     await approveTxA.wait();
 
     const approveTxB = await tokenBContract.approve(
-      SWAPR_POSITION_MANAGER_ADDRESS,
+      UNISWAP_V3_POSITION_MANAGER_ADDRESS,
       amountB
     );
     await approveTxB.wait();
@@ -273,39 +285,33 @@ async function addLiquidityToPool(
       tokenB,
       amountA,
       amountB,
-      range
+      range,
+      fee
     );
     console.log(`Created new pool and added liquidity at: ${poolAddress}`);
   } else {
     console.log(`Pool already exists at: ${poolAddress}, adding liquidity...`);
 
-    // TODO if Pool exists, there must be slippage checking!
-    // Since this script is meant for Gnosis Chain, PoC etc
-    // we don't care about MEV.
-
     // Get pool contract and info
     const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
-    const globalState = await poolContract.globalState();
-    const currentTick = globalState.tick;
-    const tickSpacing = await poolContract.tickSpacing();
+    const slot0 = await poolContract.slot0();
+    const currentTick = slot0.tick;
+    const tickSpacing = 60; // Standard for 0.3% fee tier
 
     console.log(
-      `Pool globalState - price: ${globalState.price}, tick: ${currentTick}, unlocked: ${globalState.unlocked}`
+      `Pool slot0 - sqrtPriceX96: ${slot0.sqrtPriceX96}, tick: ${currentTick}, unlocked: ${slot0.unlocked}`
     );
 
     // Calculate ticks for the range with proper token ordering
-    let lowerTick: number, upperTick: number;
-    {
-      const rawLower = priceToTick(PRICE_MIN);
-      const rawUpper = priceToTick(PRICE_MAX);
-      lowerTick = Math.floor(rawLower / tickSpacing) * tickSpacing;
-      upperTick = Math.ceil(rawUpper / tickSpacing) * tickSpacing;
+    const rawLower = priceToTick(PRICE_MIN);
+    const rawUpper = priceToTick(PRICE_MAX);
+    const lowerTick = nearestUsableTick(Math.floor(rawLower), tickSpacing);
+    const upperTick = nearestUsableTick(Math.ceil(rawUpper), tickSpacing);
 
-      console.log(`Token order: ${token0.symbol} < ${token1.symbol}`);
-      console.log(
-        `Price range: ${PRICE_MIN}-${PRICE_MAX}, Ticks: [${lowerTick}, ${upperTick}]`
-      );
-    }
+    console.log(`Token order: ${token0.symbol} < ${token1.symbol}`);
+    console.log(
+      `Price range: ${PRICE_MIN}-${PRICE_MAX}, Ticks: [${lowerTick}, ${upperTick}]`
+    );
 
     console.log(
       `Current tick: ${currentTick}, Range: [${lowerTick}, ${upperTick}]`
@@ -316,13 +322,13 @@ async function addLiquidityToPool(
     const tokenBContract = new Contract(tokenB.address, ERC20_ABI, wallet);
 
     const approveTxA = await tokenAContract.approve(
-      SWAPR_POSITION_MANAGER_ADDRESS,
+      UNISWAP_V3_POSITION_MANAGER_ADDRESS,
       amountA
     );
     await approveTxA.wait();
 
     const approveTxB = await tokenBContract.approve(
-      SWAPR_POSITION_MANAGER_ADDRESS,
+      UNISWAP_V3_POSITION_MANAGER_ADDRESS,
       amountB
     );
     await approveTxB.wait();
@@ -331,7 +337,7 @@ async function addLiquidityToPool(
 
     // Mint the position
     const positionManager = new Contract(
-      SWAPR_POSITION_MANAGER_ADDRESS,
+      UNISWAP_V3_POSITION_MANAGER_ADDRESS,
       POSITION_MANAGER_ABI,
       wallet
     );
@@ -340,6 +346,7 @@ async function addLiquidityToPool(
     const mintParams = [
       token0.address,
       token1.address,
+      fee,
       lowerTick,
       upperTick,
       amountA,
@@ -443,7 +450,7 @@ export async function addLiquidity(
       `Token balances - DOWN: ${downBalance}, UP: ${upBalance}, sDAI: ${sDAIBalance}`
     );
 
-    // 5. Create Token instances for Swapr SDK
+    // 5. Create Token instances for Uniswap SDK
     if (!downTokenAddress || !upTokenAddress) {
       throw new Error(
         `Invalid token addresses: DOWN=${downTokenAddress}, UP=${upTokenAddress}`
@@ -460,7 +467,7 @@ export async function addLiquidity(
     const upTokenSdk = new Token(CHAIN_ID, upTokenAddress, 18, "UP", "UP");
     const sDAITokenSdk = new Token(CHAIN_ID, SDAI_ADDRESS, 18, "sDAI", "sDAI");
 
-    console.log("Created Token instances for Swapr SDK");
+    console.log("Created Token instances for Uniswap SDK");
 
     // 6. Add liquidity to both pools
     await addLiquidityToPool(
@@ -482,7 +489,7 @@ export async function addLiquidity(
     );
 
     console.log(
-      "Successfully added liquidity to both DOWN/sDAI and UP/sDAI pools"
+      "Successfully added liquidity to both DOWN/sDAI and UP/sDAI pools using Uniswap V3"
     );
   } catch (error) {
     console.error("Error adding liquidity:", error);

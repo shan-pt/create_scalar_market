@@ -1,18 +1,6 @@
 [
   {
-    "repo": "test1/repo1",
-    "marketAddress": "0x930cef266124f4a3ca0516eb7641f7b60962a7b9"
-  },
-  {
-    "repo": "test3/repo3",
-    "marketAddress": "0x759f4ba4d98bf9c1acdfcc06aff87d28207d0bd3"
-  },
-  {
-    "repo": "test4/repo4",
-    "marketAddress": "0x7eb14e34674878951ede3872b5d0b1c240e1caa9"
-  },
-  {
-    "repo": "test5/repo5",
-    "marketAddress": "0x9cc47c99835cd336ca1a7049b6aeada3cb5e5218"
+    "repo": "uniswap1/repo2",
+    "marketAddress": "0x21a70e522adb02dfb51ac9970c97f710f1e17034"
   }
 ]
