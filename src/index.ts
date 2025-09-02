@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 
 import * as fs from "fs";
+import { parseUnits } from 'viem';
 import { addLiquidity } from "./addLiquidity";
+import * as dotenv from 'dotenv';
 
-interface LiquidityRange {
-  lowerBound: number;
-  upperBound: number;
-}
+dotenv.config();
 
 async function main() {
   const args = process.argv.slice(2);
@@ -16,14 +15,20 @@ async function main() {
     const amount = args[1] ? parseFloat(args[1]) : 0.005; // default amount
     const lowerBound = args[2] ? parseFloat(args[2]) : 0.05;
     const upperBound = args[3] ? parseFloat(args[3]) : 0.95;
-    const range: LiquidityRange = { lowerBound, upperBound };
+    const chainId = args[4] ? parseInt(args[4]) : 8453; // default to Base
 
     const markets = JSON.parse(fs.readFileSync("createdMarkets.json", "utf-8"));
     for (const entry of markets) {
-      const marketAddress = entry.marketAddress;
+      const marketAddress = entry.marketId as `0x${string}`;
       console.log(`\n🚀 Adding liquidity to market: ${marketAddress}`);
       try {
-        await addLiquidity(marketAddress, amount, range);
+        await addLiquidity({
+          marketAddress,
+          collateralAmount: parseUnits(amount.toString(), 18),
+          minPrice: lowerBound,
+          maxPrice: upperBound,
+          chainId
+        });
         console.log("✅ Successfully added liquidity!");
       } catch (error) {
         console.error(`❌ Failed for ${marketAddress}:`, error);
@@ -34,22 +39,26 @@ async function main() {
 
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
     console.log(`
-Usage: npm run add-liquidity <marketAddress> <amount> [lowerBound] [upperBound]
+Usage: npm run add-liquidity <marketAddress> <amount> [lowerBound] [upperBound] [chainId]
 
 Arguments:
   marketAddress   The address of the Seer prediction market
-  amount         The amount of sDAI to use for liquidity (in human-readable format, e.g., "100" for 100 sDAI)
+  amount         The amount of collateral to use for liquidity (e.g., "100" for 100 tokens)
   lowerBound     Lower bound of price range (0-1, default: 0.05)
   upperBound     Upper bound of price range (0-1, default: 0.95)
+  chainId        Chain ID (default: 8453 for Base, 100 for Gnosis, 42161 for Arbitrum)
 
 Examples:
-  npm run add-liquidity 0x1234...5678 100                    # Add 100 sDAI liquidity with default range 0.05-0.95
-  npm run add-liquidity 0x1234...5678 50 0.1 0.9            # Add 50 sDAI liquidity with range 0.1-0.9
-  npm run add-liquidity 0x1234...5678 25 0.2 0.8            # Add 25 sDAI liquidity with range 0.2-0.8
+  npm run add-liquidity 0x1234...5678 100                    # Add 100 USDC liquidity on Base
+  npm run add-liquidity 0x1234...5678 50 0.1 0.9            # Custom range on Base
+  npm run add-liquidity 0x1234...5678 25 0.2 0.8 100        # Add liquidity on Gnosis
+
+Special commands:
+  npm run add-liquidity --all [amount] [lowerBound] [upperBound] [chainId]
+    Add liquidity to all markets in createdMarkets.json
 
 Environment variables required:
-  RPC_URL        The RPC endpoint for Gnosis Chain
-  PRIVATE_KEY    Your private key (without 0x prefix)
+  PRIVATE_KEY    Your private key (with 0x prefix)
     `);
     process.exit(0);
   }
@@ -60,10 +69,11 @@ Environment variables required:
     process.exit(1);
   }
 
-  const marketAddress = args[0];
+  const marketAddress = args[0] as `0x${string}`;
   const amount = parseFloat(args[1]);
   const lowerBound = args[2] ? parseFloat(args[2]) : 0.05;
   const upperBound = args[3] ? parseFloat(args[3]) : 0.95;
+  const chainId = args[4] ? parseInt(args[4]) : 8453; // default to Base
 
   // Validate inputs
   if (!marketAddress || !marketAddress.startsWith('0x') || marketAddress.length !== 42) {
@@ -92,28 +102,27 @@ Environment variables required:
   }
 
   // Validate environment variables
-  if (!process.env.RPC_URL) {
-    console.error("❌ Error: RPC_URL environment variable is required");
-    console.error("Set it in your .env file or export it: export RPC_URL='https://rpc.gnosis.gateway.fm'");
-    process.exit(1);
-  }
-
   if (!process.env.PRIVATE_KEY) {
     console.error("❌ Error: PRIVATE_KEY environment variable is required");
-    console.error("Set it in your .env file or export it: export PRIVATE_KEY='your_private_key'");
+    console.error("Set it in your .env file: PRIVATE_KEY='0x...'");
     process.exit(1);
   }
-
-  const range: LiquidityRange = { lowerBound, upperBound };
 
   console.log("🚀 Adding liquidity to Seer prediction market...");
   console.log(`📍 Market Address: ${marketAddress}`);
-  console.log(`💰 Amount: ${amount} sDAI`);
+  console.log(`💰 Amount: ${amount} tokens`);
   console.log(`📊 Price Range: ${lowerBound} - ${upperBound}`);
+  console.log(`🔗 Chain ID: ${chainId}`);
   console.log("");
 
   try {
-    await addLiquidity(marketAddress, amount, range);
+    await addLiquidity({
+      marketAddress,
+      collateralAmount: parseUnits(amount.toString(), 18),
+      minPrice: lowerBound,
+      maxPrice: upperBound,
+      chainId
+    });
     console.log("✅ Successfully added liquidity to both pools!");
   } catch (error) {
     console.error("❌ Failed to add liquidity:", error);

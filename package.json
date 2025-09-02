@@ -4,10 +4,11 @@
     "@uniswap/sdk-core": "^7.7.2",
     "axios": "^1.11.0",
     "dotenv": "^17.2.1",
-    "ethers": "^5.8.0",
     "fs": "^0.0.1-security",
     "graphql": "^16.11.0",
     "graphql-tag": "^2.12.6",
+    "viem": "^2.36.0",
+    "wagmi": "^2.16.9",
     "web3.storage": "^4.5.5"
   },
   "name": "create_scalar_market",
@@ -15,15 +16,15 @@
   "main": "index.js",
   "devDependencies": {
     "@types/node": "^24.2.0",
+    "@uniswap/v3-core": "^1.0.1",
+    "@uniswap/v3-periphery": "^1.4.4",
     "@uniswap/v3-sdk": "^3.25.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "add-liquidity": "npx ts-node index.ts",
-    "build": "npx tsc",
-    "start": "node dist/index.js"
+    "add-liquidity": "npx ts-node src/index.ts",
+    "create-markets": "npx ts-node src/createMarkets.ts"
   },
   "keywords": [],
   "author": "",
