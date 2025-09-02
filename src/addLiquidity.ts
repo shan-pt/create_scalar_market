@@ -10,7 +10,6 @@ import {
   calculateMinAmounts,
   calculateTokenAmountsForLiquidity,
   calculateTotalCollateralNeeded,
-  priceToTick,
   getTickSpacing
 } from './utils/dex';
 import {
@@ -175,7 +174,8 @@ export async function addLiquidity({
           collateralAmount,
           isToken0Outcome,
           poolState.tickSpacing,
-          config.chain.id
+          config.chain.id,
+          feeTier
         );
         
         analysis = {
@@ -289,7 +289,7 @@ async function createAndAddLiquidity(
   slippageTolerance: number,
   feeTier: number
 ): Promise<void> {
-  const { wrappedToken, collateralToken, amount0, amount1, tickLower, tickUpper, isToken0Outcome } = analysis;
+  const { wrappedToken, collateralToken } = analysis;
   
   // Sort tokens to get correct order
   const [token0, token1] = sortTokens(wrappedToken, collateralToken);
@@ -327,12 +327,35 @@ async function createAndAddLiquidity(
   
   console.log(`    Pool address: ${poolAddress}`);
   
+  // Get actual pool state after creation
+  const poolState = await client.executeWithRetry(
+    () => client.getPoolState(poolAddress),
+    3,
+    1000
+  );
+  
+  console.log(`    Pool created with tick: ${poolState.tick}`);
+  
+  // Recalculate amounts based on actual pool tick
+  const { amount0: actualAmount0, amount1: actualAmount1 } = calculateTokenAmountsForLiquidity(
+    poolState.tick,
+    analysis.tickLower,
+    analysis.tickUpper,
+    analysis.collateralNeeded,
+    analysis.isToken0Outcome,
+    poolState.tickSpacing,
+    config.chain.id,
+    feeTier
+  );
+  
   // Now add liquidity to the newly created pool
   await addLiquidityToExistingPool(client, config, {
     ...analysis,
     poolAddress,
     exists: true,
-    currentTick: priceToTick(initialPrice)
+    currentTick: poolState.tick,
+    amount0: actualAmount0,
+    amount1: actualAmount1
   }, slippageTolerance, feeTier);
 }
 
@@ -351,7 +374,6 @@ async function addLiquidityToExistingPool(
     amount1, 
     tickLower, 
     tickUpper, 
-    isToken0Outcome,
     currentTick 
   } = analysis;
   
@@ -368,11 +390,18 @@ async function addLiquidityToExistingPool(
   console.log(`      Token1: ${formatUnits(amount1, 18)}`); // Pool tokens are always 18 decimals
 
   // Calculate minimum amounts with slippage protection
+  // For new pools, use higher slippage tolerance to account for initialization variance
+  const isNewPool = !analysis.exists;
+  const effectiveSlippage = isNewPool ? Math.max(slippageTolerance, 0.05) : slippageTolerance;
   const { amount0Min, amount1Min } = calculateMinAmounts(
     amount0,
     amount1,
-    slippageTolerance
+    effectiveSlippage
   );
+  
+  if (isNewPool) {
+    console.log(`    Using increased slippage tolerance for new pool: ${(effectiveSlippage * 100).toFixed(1)}%`);
+  }
 
   // Approve tokens sequentially with delays to avoid rate limits
   console.log('    Approving tokens...');
@@ -564,7 +593,8 @@ export async function checkCollateralSolvency(
           collateralAmount,
           isToken0Outcome,
           poolState.tickSpacing || tickSpacing,
-          config.chain.id
+          config.chain.id,
+          feeTier
         );
         
         marketCollateralNeeded += collateralNeeded;
