@@ -118,7 +118,7 @@ export async function addLiquidity({
         console.log(`    Pool does not exist, will create at midpoint price`);
         
         // Get proper tick spacing based on fee tier
-        const tickSpacing = getTickSpacing(config.defaultFee);
+        const tickSpacing = getTickSpacing(config.defaultFee, config);
         const { tickLower, tickUpper } = calculateTickBounds(
           priceMin,
           priceMax,
@@ -471,6 +471,131 @@ async function addLiquidityToExistingPool(
 
   await client.waitForTransaction(mintTx);
   console.log(`    ✓ Liquidity added: ${config.explorerUrl}/tx/${mintTx}`);
+}
+
+// Function to check collateral solvency for multiple markets
+export async function checkCollateralSolvency(
+  markets: Array<{marketAddress: `0x${string}`, collateralAmount: bigint}>,
+  chainId: number = 8453,
+  minPrice: number = liquidityDefaults.minPrice,
+  maxPrice: number = liquidityDefaults.maxPrice
+): Promise<{issolvent: boolean, totalNeeded: bigint, available: bigint, collateralToken: `0x${string}`}> {
+  const privateKey = process.env.PRIVATE_KEY as `0x${string}`;
+  if (!privateKey) {
+    throw new Error('PRIVATE_KEY not found in environment variables');
+  }
+
+  const rpcUrl = process.env.RPC_URL;
+  const config = getChainConfig(chainId);
+  const client = new ContractClient(config, privateKey, rpcUrl);
+
+  console.log('\n📊 Analyzing collateral requirements for all markets...');
+  
+  let totalCollateralNeeded = 0n;
+  let collateralToken: `0x${string}` | null = null;
+  let collateralDecimals: number = 18;
+
+  for (const {marketAddress, collateralAmount} of markets) {
+    console.log(`\n  Analyzing market: ${marketAddress}`);
+    
+    // Get market information
+    const marketInfo = await client.executeWithRetry(
+      () => client.getMarketInfo(marketAddress),
+      3,
+      2000
+    );
+
+    // Verify all markets use the same collateral token
+    if (collateralToken === null) {
+      collateralToken = marketInfo.collateralToken;
+      collateralDecimals = await client.getTokenDecimals(collateralToken);
+    } else if (collateralToken !== marketInfo.collateralToken) {
+      throw new Error(`Markets use different collateral tokens: ${collateralToken} vs ${marketInfo.collateralToken}`);
+    }
+
+    // Calculate requirements for each pool in this market (first 2 pools)
+    let marketCollateralNeeded = 0n;
+    
+    for (let i = 0; i < Math.min(2, marketInfo.wrappedTokens.length - 1); i++) {
+      const wrappedToken = marketInfo.wrappedTokens[i];
+      const [token0, token1] = sortTokens(wrappedToken, marketInfo.collateralToken);
+      const isToken0Outcome = token0 === wrappedToken;
+      
+      const poolAddress = await client.executeWithRetry(
+        () => client.getPool(token0, token1),
+        3,
+        1000
+      );
+      
+      if (!poolAddress) {
+        // New pool - estimate 50/50 split at midpoint
+        const midPrice = (minPrice + maxPrice) / 2;
+        const collateralForPool = collateralAmount * BigInt(Math.floor(midPrice * 1000)) / 1000n;
+        marketCollateralNeeded += collateralForPool;
+      } else {
+        // Existing pool - calculate based on current tick
+        const poolState = await client.executeWithRetry(
+          () => client.getPoolState(poolAddress),
+          3,
+          1000
+        );
+        
+        const tickSpacing = getTickSpacing(config.defaultFee, config);
+        const { tickLower, tickUpper } = calculateTickBounds(
+          minPrice,
+          maxPrice,
+          poolState.tickSpacing || tickSpacing,
+          isToken0Outcome
+        );
+        
+        const { collateralNeeded } = calculateTokenAmountsForLiquidity(
+          poolState.tick,
+          tickLower,
+          tickUpper,
+          collateralAmount,
+          isToken0Outcome,
+          poolState.tickSpacing || tickSpacing,
+          config.chain.id
+        );
+        
+        marketCollateralNeeded += collateralNeeded;
+      }
+    }
+    
+    totalCollateralNeeded += marketCollateralNeeded;
+    console.log(`    Collateral needed: ${formatUnits(marketCollateralNeeded, collateralDecimals)}`);
+  }
+
+  if (!collateralToken) {
+    throw new Error('No valid markets found');
+  }
+
+  // Check user's collateral balance
+  const collateralBalance = await client.getTokenBalance(
+    collateralToken,
+    client.account.address
+  );
+
+  console.log(`\n📊 Solvency Check Summary:`);
+  console.log(`  Total collateral needed: ${formatUnits(totalCollateralNeeded, collateralDecimals)}`);
+  console.log(`  Available collateral: ${formatUnits(collateralBalance, collateralDecimals)}`);
+  
+  const issolvent = collateralBalance >= totalCollateralNeeded;
+  
+  if (!issolvent) {
+    const shortfall = totalCollateralNeeded - collateralBalance;
+    console.log(`  ❌ INSUFFICIENT: Need ${formatUnits(shortfall, collateralDecimals)} more collateral`);
+  } else {
+    const excess = collateralBalance - totalCollateralNeeded;
+    console.log(`  ✅ SUFFICIENT: ${formatUnits(excess, collateralDecimals)} excess collateral`);
+  }
+
+  return {
+    issolvent,
+    totalNeeded: totalCollateralNeeded,
+    available: collateralBalance,
+    collateralToken
+  };
 }
 
 // Export for use in other modules

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import * as fs from "fs";
-import { parseUnits } from 'viem';
-import { addLiquidity } from "./addLiquidity";
+import { parseUnits, formatUnits } from 'viem';
+import { addLiquidity, checkCollateralSolvency } from "./addLiquidity";
 import * as dotenv from 'dotenv';
 
 dotenv.config();
@@ -18,13 +18,41 @@ async function main() {
     const chainId = args[4] ? parseInt(args[4]) : 8453; // default to Base
 
     const markets = JSON.parse(fs.readFileSync("createdMarkets.json", "utf-8"));
+    const collateralAmount = parseUnits(amount.toString(), 18);
+    
+    // First, check if user has enough collateral for all markets
+    console.log(`\n🔍 Checking collateral solvency for ${markets.length} markets...`);
+    
+    const marketParams = markets.map((entry: any) => ({
+      marketAddress: entry.marketId as `0x${string}`,
+      collateralAmount
+    }));
+    
+    const solvencyCheck = await checkCollateralSolvency(
+      marketParams,
+      chainId,
+      lowerBound,
+      upperBound
+    );
+    
+    if (!solvencyCheck.issolvent) {
+      console.error(`\n❌ Cannot proceed: Insufficient collateral balance`);
+      console.error(`   Required: ${formatUnits(solvencyCheck.totalNeeded, 18)}`);
+      console.error(`   Available: ${formatUnits(solvencyCheck.available, 18)}`);
+      console.error(`   Shortfall: ${formatUnits(solvencyCheck.totalNeeded - solvencyCheck.available, 18)}`);
+      process.exit(1);
+    }
+    
+    console.log(`\n✅ Collateral solvency check passed! Proceeding with liquidity additions...`);
+    
+    // Now proceed with adding liquidity to each market
     for (const entry of markets) {
       const marketAddress = entry.marketId as `0x${string}`;
       console.log(`\n🚀 Adding liquidity to market: ${marketAddress}`);
       try {
         await addLiquidity({
           marketAddress,
-          collateralAmount: parseUnits(amount.toString(), 18),
+          collateralAmount,
           minPrice: lowerBound,
           maxPrice: upperBound,
           chainId
