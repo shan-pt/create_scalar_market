@@ -25,7 +25,16 @@ export const RetryConfig = {
   OPERATION_DELAY: 200,
   
   // Delay after pool creation to ensure chain state updates
-  POOL_CREATION_DELAY: 2000
+  POOL_CREATION_DELAY: 2000,
+  
+  // Delay between processing multiple pools
+  POOL_PROCESSING_DELAY: 1500
 } as const;
 
 export type RetryConfigType = typeof RetryConfig;
+
+export const TimeConstants = {
+  // Transaction deadline buffer
+  ONE_HOUR_IN_SECONDS: 3600,
+  DEADLINE_BUFFER_SECONDS: 3600
+} as const;

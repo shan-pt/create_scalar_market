@@ -148,20 +148,30 @@ export class ContractClient {
     fee: number;
   }> {
     if (this.config.chain.id === 100) {
-      const pool = getContract({
-        address: poolAddress,
-        abi: algebraPoolABI,
-        client: this.publicClient
+      // Use multicall for batch reads on Algebra
+      const results = await this.publicClient.multicall({
+        contracts: [
+          {
+            address: poolAddress,
+            abi: algebraPoolABI,
+            functionName: 'globalState'
+          },
+          {
+            address: poolAddress,
+            abi: algebraPoolABI,
+            functionName: 'tickSpacing'
+          },
+          {
+            address: poolAddress,
+            abi: algebraPoolABI,
+            functionName: 'liquidity'
+          }
+        ]
       });
 
-      // Sequential calls with small delays to avoid rate limits
-      const globalState = await pool.read.globalState();
-      await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
-      
-      const tickSpacing = await pool.read.tickSpacing();
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      const liquidity = await pool.read.liquidity();
+      const globalState = results[0].result as any;
+      const tickSpacing = results[1].result as number;
+      const liquidity = results[2].result as bigint;
 
       return {
         sqrtPriceX96: globalState[0],
@@ -171,23 +181,36 @@ export class ContractClient {
         fee: globalState[2]
       };
     } else {
-      const pool = getContract({
-        address: poolAddress,
-        abi: uniswapV3PoolABI,
-        client: this.publicClient
+      // Use multicall for batch reads on Uniswap V3
+      const results = await this.publicClient.multicall({
+        contracts: [
+          {
+            address: poolAddress,
+            abi: uniswapV3PoolABI,
+            functionName: 'slot0'
+          },
+          {
+            address: poolAddress,
+            abi: uniswapV3PoolABI,
+            functionName: 'tickSpacing'
+          },
+          {
+            address: poolAddress,
+            abi: uniswapV3PoolABI,
+            functionName: 'liquidity'
+          },
+          {
+            address: poolAddress,
+            abi: uniswapV3PoolABI,
+            functionName: 'fee'
+          }
+        ]
       });
 
-      // Sequential calls with small delays to avoid rate limits
-      const slot0 = await pool.read.slot0();
-      await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
-      
-      const tickSpacing = await pool.read.tickSpacing();
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      const liquidity = await pool.read.liquidity();
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      const fee = await pool.read.fee();
+      const slot0 = results[0].result as any;
+      const tickSpacing = results[1].result as number;
+      const liquidity = results[2].result as bigint;
+      const fee = results[3].result as number;
 
       return {
         sqrtPriceX96: slot0[0],
