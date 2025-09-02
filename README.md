@@ -4,20 +4,20 @@
 First, install the dependencies:
 
 ```bash
-npm install
+yarn install
 ```
 
 Create Scalar Markets on Gnosis Chain
 
 ```bash
-npx ts-node createMarkets.ts
+yarn create-markets
 ```
 
 Add liquidity to all created markets for both DOWN & UP tokens:
 
 ```bash
-npx ts-node index.ts --all <amount> [lowerBound] [upperBound]
-eg: npx ts-node index.ts --all  0.05 0.05 0.95
+yarn add-liquidity --all <amount> [lowerBound] [upperBound]
+eg: yarn add-liquidity --all  0.05 0.05 0.95
 ```
 
 OR
