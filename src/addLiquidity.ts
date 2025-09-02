@@ -7,13 +7,17 @@ import {
   calculateTickBounds,
   encodeSqrtPriceX96,
   sortTokens,
-  calculateMinAmounts
+  calculateMinAmounts,
+  calculateTokenAmountsForLiquidity,
+  calculateTotalCollateralNeeded,
+  priceToTick,
+  getTickSpacing
 } from './utils/dex';
 import {
   algebraPositionManagerABI,
   uniswapV3PositionManagerABI
 } from './config/abis';
-import { RetryConfig } from './config/retry';
+import { RetryConfig, TimeConstants } from './config/retry';
 
 dotenv.config();
 
@@ -24,6 +28,22 @@ interface LiquidityParams {
   maxPrice?: number;
   slippageTolerance?: number;
   chainId?: number;
+}
+
+interface PoolAnalysis {
+  wrappedToken: `0x${string}`;
+  collateralToken: `0x${string}`;
+  poolAddress: `0x${string}` | null;
+  exists: boolean;
+  currentTick?: number;
+  tickLower: number;
+  tickUpper: number;
+  tickSpacing?: number;
+  isToken0Outcome: boolean;
+  collateralNeeded: bigint;
+  outcomeNeeded: bigint;
+  amount0: bigint;
+  amount1: bigint;
 }
 
 export async function addLiquidity({
@@ -52,93 +72,200 @@ export async function addLiquidity({
 
   console.log(`\nAdding liquidity on ${config.chain.name}`);
   console.log(`Market: ${marketAddress}`);
-  console.log(`Amount: ${formatUnits(collateralAmount, 18)} collateral`);
+  console.log(`Amount: ${formatUnits(collateralAmount, 18)} collateral per pool`);
   console.log(`Price range: ${priceMin} - ${priceMax}`);
   console.log(`Slippage tolerance: ${slippage * 100}%`);
 
   try {
-    // Get market information from contract instead of subgraph
+    // Get market information from contract
     console.log('\n1. Fetching market information...');
     const marketInfo = await client.executeWithRetry(
       () => client.getMarketInfo(marketAddress),
       3,
       2000
     );
+    const collateralDecimals = await client.getTokenDecimals(marketInfo.collateralToken);
 
     console.log(`  Condition ID: ${marketInfo.conditionId}`);
     console.log(`  Wrapped tokens: ${marketInfo.wrappedTokens.join(', ')}`);
 
-    // Check collateral balance before attempting split
-    console.log('\n2. Checking collateral balance...');
+    // Analyze pools and calculate requirements
+    console.log('\n2. Analyzing pools and calculating token requirements...');
+    const poolAnalyses: PoolAnalysis[] = [];
+    let totalCollateralNeeded = 0n;
+    let totalOutcomeNeeded: bigint[] = [];
+    
+    // Analyze first 2 pools (skip invalid result token)
+    for (let i = 0; i < Math.min(2, marketInfo.wrappedTokens.length - 1); i++) {
+      const wrappedToken = marketInfo.wrappedTokens[i];
+      console.log(`\n  Analyzing pool ${i + 1} for token ${wrappedToken}...`);
+      
+      // Sort tokens to get correct pool order
+      const [token0, token1] = sortTokens(wrappedToken, marketInfo.collateralToken);
+      const isToken0Outcome = token0 === wrappedToken;
+      
+      // Check if pool exists
+      const poolAddress = await client.executeWithRetry(
+        () => client.getPool(token0, token1),
+        3,
+        1000
+      );
+      
+      let analysis: PoolAnalysis;
+      
+      if (!poolAddress) {
+        // Pool doesn't exist - we'll create it at midpoint price
+        console.log(`    Pool does not exist, will create at midpoint price`);
+        
+        // Get proper tick spacing based on fee tier
+        const tickSpacing = getTickSpacing(config.defaultFee);
+        const { tickLower, tickUpper } = calculateTickBounds(
+          priceMin,
+          priceMax,
+          tickSpacing,
+          isToken0Outcome
+        );
+        
+        // For new pool at midpoint, we need roughly 50/50 split
+        const midPrice = (priceMin + priceMax) / 2;
+        const collateralForPool = collateralAmount * BigInt(Math.floor(midPrice * 1000)) / 1000n;
+        const outcomeForPool = collateralAmount * BigInt(Math.floor((1 - midPrice) * 1000)) / 1000n;
+        
+        analysis = {
+          wrappedToken,
+          collateralToken: marketInfo.collateralToken,
+          poolAddress: null,
+          exists: false,
+          tickLower,
+          tickUpper,
+          tickSpacing,
+          isToken0Outcome,
+          collateralNeeded: collateralForPool,
+          outcomeNeeded: outcomeForPool,
+          amount0: isToken0Outcome ? outcomeForPool : collateralForPool,
+          amount1: isToken0Outcome ? collateralForPool : outcomeForPool
+        };
+      } else {
+        // Pool exists - calculate based on current price
+        console.log(`    Pool exists at ${poolAddress}`);
+        
+        const poolState = await client.executeWithRetry(
+          () => client.getPoolState(poolAddress),
+          3,
+          1000
+        );
+        
+        console.log(`    Current tick: ${poolState.tick}`);
+        console.log(`    Current liquidity: ${formatUnits(poolState.liquidity, 18)}`);
+        
+        const { tickLower, tickUpper } = calculateTickBounds(
+          priceMin,
+          priceMax,
+          poolState.tickSpacing,
+          isToken0Outcome
+        );
+        
+        const { amount0, amount1, collateralNeeded, outcomeNeeded } = calculateTokenAmountsForLiquidity(
+          poolState.tick,
+          tickLower,
+          tickUpper,
+          collateralAmount,
+          isToken0Outcome,
+          poolState.tickSpacing,
+          config.chain.id
+        );
+        
+        analysis = {
+          wrappedToken,
+          collateralToken: marketInfo.collateralToken,
+          poolAddress,
+          exists: true,
+          currentTick: poolState.tick,
+          tickLower,
+          tickUpper,
+          isToken0Outcome,
+          collateralNeeded,
+          outcomeNeeded,
+          amount0,
+          amount1
+        };
+      }
+      
+      poolAnalyses.push(analysis);
+      totalCollateralNeeded += analysis.collateralNeeded;
+      totalOutcomeNeeded.push(analysis.outcomeNeeded);
+      
+      console.log(`    Collateral needed: ${formatUnits(analysis.collateralNeeded, collateralDecimals)}`);
+      console.log(`    Outcome needed: ${formatUnits(analysis.outcomeNeeded, 18)}`); // Outcome tokens always 18 decimals
+    }
+    
+    console.log(`\n  Total collateral needed: ${formatUnits(totalCollateralNeeded, collateralDecimals)}`);
+    
+    // Check collateral balance
+    console.log('\n3. Checking collateral balance...');
     const collateralBalance = await client.getTokenBalance(
       marketInfo.collateralToken, 
       client.account.address
     );
     
-    if (collateralBalance < collateralAmount) {
+    if (collateralBalance < totalCollateralNeeded) {
       const decimals = await client.getTokenDecimals(marketInfo.collateralToken);
       throw new Error(
-        `Insufficient collateral balance. Required: ${formatUnits(collateralAmount, decimals)}, Available: ${formatUnits(collateralBalance, decimals)}`
+        `Insufficient collateral balance. Required: ${formatUnits(totalCollateralNeeded, decimals)}, Available: ${formatUnits(collateralBalance, decimals)}`
       );
     }
-    console.log(`  ✓ Sufficient collateral balance: ${formatUnits(collateralBalance, 18)}`);
+    console.log(`  ✓ Sufficient collateral balance: ${formatUnits(collateralBalance, collateralDecimals)}`);
 
-    // Split collateral into outcome tokens
-    console.log('\n3. Splitting collateral into outcome tokens...');
-    const splitTx = await client.splitPosition(
-      marketAddress, 
-      collateralAmount,
-      marketInfo.collateralToken
-    );
-    await client.waitForTransaction(splitTx);
-    console.log(`  ✓ Split transaction: ${config.explorerUrl}/tx/${splitTx}`);
-
-    // Wait a bit for state to update
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // Get balances sequentially with delays to avoid rate limits
-    const balances: bigint[] = [];
-    for (const token of marketInfo.wrappedTokens) {
-      const balance = await client.getTokenBalance(token, client.account.address);
-      balances.push(balance);
-      await new Promise(resolve => setTimeout(resolve, 200)); // 200ms delay between calls
+    // Split only the amount needed
+    const maxOutcomeNeeded = totalOutcomeNeeded.reduce((max, curr) => curr > max ? curr : max, 0n);
+    if (maxOutcomeNeeded > 0n) {
+      console.log('\n4. Splitting collateral into outcome tokens...');
+      console.log(`  Splitting ${formatUnits(maxOutcomeNeeded, collateralDecimals)} collateral`);
+      
+      const splitTx = await client.splitPosition(
+        marketAddress, 
+        maxOutcomeNeeded,
+        marketInfo.collateralToken
+      );
+      await client.waitForTransaction(splitTx);
+      console.log(`  ✓ Split transaction: ${config.explorerUrl}/tx/${splitTx}`);
+      
+      // Wait for state to update
+      await new Promise(resolve => setTimeout(resolve, RetryConfig.POOL_CREATION_DELAY));
+    } else {
+      console.log('\n4. No split needed (pools out of range or already have outcome tokens)');
     }
-    
-    const decimals = await client.getTokenDecimals(marketInfo.wrappedTokens[0]);
-    
-    console.log(`  Outcome token balances: ${balances.map(b => formatUnits(b, decimals)).join(', ')}`);
 
-    // Add liquidity to both pools
-    console.log('\n4. Adding liquidity to pools...');
-    // skipping last wrappedToken which is invalid result
-    for (let i = 0; i < marketInfo.wrappedTokens.length - 1; i++) {
-      const wrappedToken = marketInfo.wrappedTokens[i];
-      const balance = balances[i];
-
-      if (balance === 0n) {
-        console.log(`  ⚠ No balance for token ${i}, skipping...`);
-        continue;
-      }
-
+    // Add liquidity to pools using calculated amounts
+    console.log('\n5. Adding liquidity to pools...');
+    for (let i = 0; i < poolAnalyses.length; i++) {
+      const analysis = poolAnalyses[i];
+      
       console.log(`\n  Pool ${i + 1}:`);
       
-      // Add delay between processing pools to avoid rate limits
       if (i > 0) {
         console.log('  Waiting before processing next pool...');
-        await client.delay(1500);
+        await client.delay(RetryConfig.POOL_PROCESSING_DELAY);
       }
       
-      await addLiquidityToPool(
-        client,
-        config,
-        wrappedToken,
-        marketInfo.collateralToken,
-        balance,
-        balance, // Use equal amounts for now
-        priceMin,
-        priceMax,
-        slippage
-      );
+      // Create pool if it doesn't exist
+      if (!analysis.exists) {
+        await createAndAddLiquidity(
+          client,
+          config,
+          analysis,
+          priceMin,
+          priceMax,
+          slippage
+        );
+      } else {
+        await addLiquidityToExistingPool(
+          client,
+          config,
+          analysis,
+          slippage
+        );
+      }
     }
 
     console.log('\n✅ Liquidity added successfully!');
@@ -148,96 +275,93 @@ export async function addLiquidity({
   }
 }
 
-async function addLiquidityToPool(
+async function createAndAddLiquidity(
   client: ContractClient,
   config: ChainConfig,
-  tokenA: `0x${string}`,
-  tokenB: `0x${string}`,
-  amountA: bigint,
-  amountB: bigint,
+  analysis: PoolAnalysis,
   minPrice: number,
   maxPrice: number,
-  slippageTolerance: number,
-  fee?: number
+  slippageTolerance: number
 ): Promise<void> {
-  // Sort tokens to get correct pool order
-  const [token0, token1] = sortTokens(tokenA, tokenB);
-  // tokenA is the outcome token, tokenB is the collateral token
-  const isToken0Outcome = token0 === tokenA;
-
-  // Determine amounts based on token order
-  const amount0 = token0 === tokenA ? amountA : amountB;
-  const amount1 = token0 === tokenA ? amountB : amountA;
-
-  // Check if pool exists with retry logic
-  let poolAddress = await client.executeWithRetry(
-    () => client.getPool(token0, token1, fee),
-    RetryConfig.RATE_LIMIT_RETRIES,
-    RetryConfig.RATE_LIMIT_DELAY
-  );
-
-  if (!poolAddress) {
-    console.log('    Pool does not exist, creating...');
-
-    // Calculate initial price (0.5 for equal probability)
-    const sqrtPriceX96 = encodeSqrtPriceX96(0.5, 18, 18);
-
-    // Estimate gas for pool creation
-    console.log('    Estimating gas for pool creation...');
-    const gasEstimate = await client.estimateGas(
-      () => client.createPool(token0, token1, sqrtPriceX96, fee)
-    );
-    console.log(`    Estimated gas: ${gasEstimate.toString()}`);
-
-    const createTx = await client.createPool(token0, token1, sqrtPriceX96, fee);
-    await client.waitForTransaction(createTx);
-    console.log(`    ✓ Pool created: ${config.explorerUrl}/tx/${createTx}`);
-    
-    // Wait a bit for chain state to update
-    await client.delay(RetryConfig.POOL_CREATION_DELAY);
-
-    poolAddress = await client.executeWithRetry(
-      () => client.getPool(token0, token1, fee),
-      RetryConfig.RATE_LIMIT_RETRIES,
-      RetryConfig.RATE_LIMIT_DELAY
-    );
-    if (!poolAddress) throw new Error('Failed to create pool');
-  }
-
-  console.log(`    Pool address: ${poolAddress}`);
-
-  // Get pool state with retry logic for rate limits
-  const poolState = await client.executeWithRetry(
-    () => client.getPoolState(poolAddress),
-    RetryConfig.RATE_LIMIT_RETRIES,
-    RetryConfig.RATE_LIMIT_DELAY
-  );
-  console.log(`    Current tick: ${poolState.tick}`);
-  console.log(`    Tick spacing: ${poolState.tickSpacing}`);
-  console.log(`    Current liquidity: ${formatUnits(poolState.liquidity, 18)}`);
+  const { wrappedToken, collateralToken, amount0, amount1, tickLower, tickUpper, isToken0Outcome } = analysis;
   
-  // Small delay to avoid rate limits (reduced from hardcoded value)
-  await client.delay(RetryConfig.OPERATION_DELAY);
-
-  // Calculate tick bounds
-  let { tickLower, tickUpper } = calculateTickBounds(
-    minPrice,
-    maxPrice,
-    poolState.tickSpacing,
-    isToken0Outcome
+  // Sort tokens to get correct order
+  const [token0, token1] = sortTokens(wrappedToken, collateralToken);
+  
+  console.log('    Creating new pool...');
+  
+  // Calculate initial price (midpoint of range)
+  const initialPrice = (minPrice + maxPrice) / 2;
+  console.log(`    Initial price: ${initialPrice.toFixed(4)}`);
+  
+  // Get decimals for both tokens
+  const decimals0 = await client.getTokenDecimals(token0);
+  const decimals1 = await client.getTokenDecimals(token1);
+  
+  const sqrtPriceX96 = encodeSqrtPriceX96(initialPrice, decimals0, decimals1);
+  
+  // Create pool
+  const createTx = await client.createPool(token0, token1, sqrtPriceX96, config.defaultFee);
+  await client.waitForTransaction(createTx);
+  console.log(`    ✓ Pool created: ${config.explorerUrl}/tx/${createTx}`);
+  
+  // Wait for chain state to update
+  await client.delay(RetryConfig.POOL_CREATION_DELAY);
+  
+  // Get the pool address
+  const poolAddress = await client.executeWithRetry(
+    () => client.getPool(token0, token1, config.defaultFee),
+    3,
+    1000
   );
-
-  // Check if pool is initialized (has liquidity)
-  const isUninitialized = poolState.liquidity === 0n;
-  if (isUninitialized) {
-    console.log(`    Pool is uninitialized, will use multicall to initialize and add liquidity`);
-    console.log(`    Initial tick range will be: [${tickLower}, ${tickUpper}]`);
+  
+  if (!poolAddress) {
+    throw new Error('Failed to create pool');
   }
+  
+  console.log(`    Pool address: ${poolAddress}`);
+  
+  // Now add liquidity to the newly created pool
+  await addLiquidityToExistingPool(client, config, {
+    ...analysis,
+    poolAddress,
+    exists: true,
+    currentTick: priceToTick(initialPrice)
+  }, slippageTolerance);
+}
 
+async function addLiquidityToExistingPool(
+  client: ContractClient,
+  config: ChainConfig,
+  analysis: PoolAnalysis,
+  slippageTolerance: number
+): Promise<void> {
+  const { 
+    wrappedToken, 
+    collateralToken,
+    poolAddress, 
+    amount0, 
+    amount1, 
+    tickLower, 
+    tickUpper, 
+    isToken0Outcome,
+    currentTick 
+  } = analysis;
+  
+  if (!poolAddress) {
+    throw new Error('Pool address is required for existing pool');
+  }
+  
+  const [token0, token1] = sortTokens(wrappedToken, collateralToken);
+  
+  console.log(`    Pool address: ${poolAddress}`);
   console.log(`    Tick range: [${tickLower}, ${tickUpper}]`);
+  console.log(`    Adding liquidity with amounts:`);
+  console.log(`      Token0: ${formatUnits(amount0, 18)}`);
+  console.log(`      Token1: ${formatUnits(amount1, 18)}`); // Pool tokens are always 18 decimals
 
   // Calculate minimum amounts with slippage protection
-  calculateMinAmounts(
+  const { amount0Min, amount1Min } = calculateMinAmounts(
     amount0,
     amount1,
     slippageTolerance
@@ -281,134 +405,72 @@ async function addLiquidityToPool(
     abi: positionManagerAbi as any,
     client: client.walletClient
   });
-
-  // Check if current price is within our range
-  // If not, we need to provide only one token
-  let adjustedAmount0 = amount0;
-  let adjustedAmount1 = amount1;
   
-  if (poolState.tick < tickLower) {
-    // Current price is below our range, only provide token0
-    console.log(`    Current tick (${poolState.tick}) is below range, providing only token0`);
-    adjustedAmount1 = 0n;
-  } else if (poolState.tick >= tickUpper) {
-    // Current price is above our range, only provide token1
-    console.log(`    Current tick (${poolState.tick}) is above range, providing only token1`);
-    adjustedAmount0 = 0n;
+  // Check if we're providing single-sided liquidity
+  const isSingleSided = amount0 === 0n || amount1 === 0n;
+  if (isSingleSided && currentTick !== undefined) {
+    if (currentTick < tickLower) {
+      console.log(`    Current tick (${currentTick}) is below range, providing only token0`);
+    } else if (currentTick >= tickUpper) {
+      console.log(`    Current tick (${currentTick}) is above range, providing only token1`);
+    }
   }
   
   // Prepare mint params based on chain type
-  // For uninitialized pools or single-sided liquidity, use 0 for minimum amounts
-  const useZeroMins = isUninitialized || adjustedAmount0 === 0n || adjustedAmount1 === 0n;
-  
   const mintParams = config.chain.id === 100 ? {
     // Algebra/Swapr format (tuple)
     token0,
     token1,
     tickLower,
     tickUpper,
-    amount0Desired: adjustedAmount0,
-    amount1Desired: adjustedAmount1,
-    amount0Min: useZeroMins ? 0n : calculateMinAmounts(adjustedAmount0, adjustedAmount1, slippageTolerance).amount0Min,
-    amount1Min: useZeroMins ? 0n : calculateMinAmounts(adjustedAmount0, adjustedAmount1, slippageTolerance).amount1Min,
+    amount0Desired: amount0,
+    amount1Desired: amount1,
+    amount0Min: isSingleSided ? 0n : amount0Min,
+    amount1Min: isSingleSided ? 0n : amount1Min,
     recipient: client.account.address,
-    deadline: BigInt(Math.floor(Date.now() / 1000) + 3600) // 1 hour from now
+    deadline: BigInt(Math.floor(Date.now() / 1000) + TimeConstants.DEADLINE_BUFFER_SECONDS)
   } : {
     // Uniswap V3 format (includes fee)
     token0,
     token1,
-    fee: fee || config.defaultFee,
+    fee: config.defaultFee,
     tickLower,
     tickUpper,
-    amount0Desired: adjustedAmount0,
-    amount1Desired: adjustedAmount1,
-    amount0Min: useZeroMins ? 0n : calculateMinAmounts(adjustedAmount0, adjustedAmount1, slippageTolerance).amount0Min,
-    amount1Min: useZeroMins ? 0n : calculateMinAmounts(adjustedAmount0, adjustedAmount1, slippageTolerance).amount1Min,
+    amount0Desired: amount0,
+    amount1Desired: amount1,
+    amount0Min: isSingleSided ? 0n : amount0Min,
+    amount1Min: isSingleSided ? 0n : amount1Min,
     recipient: client.account.address,
-    deadline: BigInt(Math.floor(Date.now() / 1000) + 3600) // 1 hour from now
+    deadline: BigInt(Math.floor(Date.now() / 1000) + TimeConstants.DEADLINE_BUFFER_SECONDS)
   };
 
-  if (isUninitialized) {
-    // For uninitialized pools, use multicall to initialize and mint
-    console.log('    Using multicall to initialize pool and add liquidity...');
-    
-    // Get decimals for both tokens
-    const decimals0 = await client.getTokenDecimals(token0);
-    const decimals1 = await client.getTokenDecimals(token1);
-    
-    // Calculate initial price as the arithmetic mean of the price range
-    // This provides a neutral starting point within the specified range
-    // For prediction markets, this represents the midpoint of probabilities
-    const initialPrice = (minPrice + maxPrice) / 2;
-    console.log(`    Initializing pool at price ${initialPrice.toFixed(4)} (midpoint of range ${minPrice} - ${maxPrice})`)
-    
-    const sqrtPriceX96 = encodeSqrtPriceX96(
-      initialPrice,
-      decimals0,
-      decimals1
-    );
-    
-    // Encode createAndInitializePoolIfNecessary call
-    const createPoolArgs = config.chain.id === 100
-      ? [token0, token1, sqrtPriceX96]  // Algebra doesn't need fee
-      : [token0, token1, fee || config.defaultFee, sqrtPriceX96];  // Uniswap V3 needs fee
-      
-    const createPoolData = encodeFunctionData({
-      abi: positionManagerAbi as any,
-      functionName: 'createAndInitializePoolIfNecessary',
-      args: createPoolArgs
+  // Estimate gas for mint operation
+  console.log('    Estimating gas for liquidity addition...');
+  try {
+    const mintArgs = [mintParams];
+    const gasEstimate = await positionManager.estimateGas.mint(mintArgs, {
+      account: client.account
     });
-    
-    // Encode mint call
-    const mintData = encodeFunctionData({
-      abi: positionManagerAbi as any,
-      functionName: 'mint',
-      args: [mintParams]
-    });
-    
-    // Execute multicall
-    console.log('    Executing multicall to initialize and mint...');
-    const multicallTx = await client.executeWithRetry(
-      async () => positionManager.write.multicall([[createPoolData, mintData]], {
-        account: client.account,
-        chain: config.chain
-      }),
-      RetryConfig.DEFAULT_RETRIES,
-      RetryConfig.DEFAULT_DELAY
-    );
-    
-    await client.waitForTransaction(multicallTx);
-    console.log(`    ✓ Pool initialized and liquidity added: ${config.explorerUrl}/tx/${multicallTx}`);
-  } else {
-    // Normal mint for initialized pools or non-Algebra pools
-    // Estimate gas for mint operation
-    console.log('    Estimating gas for liquidity addition...');
-    try {
-      const mintArgs = config.chain.id === 100 ? [mintParams] : [mintParams];
-      const gasEstimate = await positionManager.estimateGas.mint(mintArgs, {
-        account: client.account
-      });
-      console.log(`    Estimated gas: ${gasEstimate.toString()}`);
-      const gasPrice = await client.publicClient.getGasPrice();
-      const estimatedCost = gasEstimate * gasPrice;
-      console.log(`    Estimated cost: ${formatUnits(estimatedCost, 18)} ETH`);
-    } catch (error) {
-      console.log('    Warning: Could not estimate gas');
-    }
-
-    const mintArgs = config.chain.id === 100 ? [mintParams] : [mintParams];
-    const mintTx = await client.executeWithRetry(
-      async () => positionManager.write.mint(mintArgs, {
-        account: client.account,
-        chain: config.chain
-      }),
-      RetryConfig.DEFAULT_RETRIES,
-      RetryConfig.DEFAULT_DELAY
-    );
-
-    await client.waitForTransaction(mintTx);
-    console.log(`    ✓ Liquidity added: ${config.explorerUrl}/tx/${mintTx}`);
+    console.log(`    Estimated gas: ${gasEstimate.toString()}`);
+    const gasPrice = await client.publicClient.getGasPrice();
+    const estimatedCost = gasEstimate * gasPrice;
+    console.log(`    Estimated cost: ${formatUnits(estimatedCost, 18)} ETH`);
+  } catch (error) {
+    console.log('    Warning: Could not estimate gas');
   }
+
+  const mintArgs = [mintParams];
+  const mintTx = await client.executeWithRetry(
+    async () => positionManager.write.mint(mintArgs, {
+      account: client.account,
+      chain: config.chain
+    }),
+    RetryConfig.DEFAULT_RETRIES,
+    RetryConfig.DEFAULT_DELAY
+  );
+
+  await client.waitForTransaction(mintTx);
+  console.log(`    ✓ Liquidity added: ${config.explorerUrl}/tx/${mintTx}`);
 }
 
 // Export for use in other modules
