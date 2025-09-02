@@ -17,7 +17,7 @@ Add liquidity to all created markets for both DOWN & UP tokens:
 
 ```bash
 yarn add-liquidity --all <amount> [lowerBound] [upperBound]
-eg: yarn add-liquidity --all  0.05 0.05 0.95
+eg: yarn add-liquidity --all 0.05 0.05 0.95
 ```
 
 OR

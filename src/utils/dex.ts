@@ -71,6 +71,19 @@ export function calculateTickBounds(
   
   tickLower = Math.max(tickLower, MIN_TICK);
   tickUpper = Math.min(tickUpper, MAX_TICK);
+  
+  // Ensure tickLower < tickUpper
+  if (tickLower >= tickUpper) {
+    console.error(`Invalid tick range: tickLower=${tickLower}, tickUpper=${tickUpper}`);
+    console.error(`  isToken0Outcome=${isToken0Outcome}, minPrice=${minPrice}, maxPrice=${maxPrice}`);
+    throw new Error('Invalid tick range: tickLower must be less than tickUpper');
+  }
+  
+  // Ensure ticks are aligned to tick spacing
+  tickLower = Math.floor(tickLower / tickSpacing) * tickSpacing;
+  tickUpper = Math.ceil(tickUpper / tickSpacing) * tickSpacing;
+  
+  console.log(`  Calculated ticks: [${tickLower}, ${tickUpper}] (spacing: ${tickSpacing})`);
 
   return { tickLower, tickUpper };
 }
@@ -86,6 +99,7 @@ export function getTickSpacing(fee: number, config: ChainConfig): number {
   
   // For Uniswap V3 on other chains, use standard tick spacings
   const uniswapV3TickSpacings: Record<number, number> = {
+    100: 1,     // 0.01% fee
     500: 10,    // 0.05% fee
     3000: 60,   // 0.3% fee
     10000: 200  // 1% fee
@@ -140,6 +154,7 @@ export function sortTokens(
  * @param isToken0Outcome Whether token0 is the outcome token
  * @param tickSpacing Tick spacing of the pool
  * @param chainId Chain ID for creating token instances
+ * @param feeTier Fee tier of the pool (needed for correct tick spacing)
  * @returns Required amounts of token0 and token1
  */
 export function calculateTokenAmountsForLiquidity(
@@ -149,11 +164,45 @@ export function calculateTokenAmountsForLiquidity(
   totalValue: bigint,
   isToken0Outcome: boolean,
   tickSpacing: number = 60,
-  chainId: number = 8453
+  chainId: number = 8453,
+  feeTier: number = 3000
 ): { amount0: bigint; amount1: bigint; collateralNeeded: bigint; outcomeNeeded: bigint } {
   // Create dummy tokens for the calculation (addresses don't matter for math)
   const token0 = new Token(chainId, '0x0000000000000000000000000000000000000001', 18, 'T0', 'Token0');
   const token1 = new Token(chainId, '0x0000000000000000000000000000000000000002', 18, 'T1', 'Token1');
+  
+  // Validate ticks
+  if (tickLower >= tickUpper) {
+    throw new Error(`Invalid tick range in calculateTokenAmountsForLiquidity: tickLower=${tickLower} >= tickUpper=${tickUpper}`);
+  }
+  
+  // Ensure ticks are within valid range
+  const MIN_TICK = TickMath.MIN_TICK;
+  const MAX_TICK = TickMath.MAX_TICK;
+  if (tickLower < MIN_TICK || tickUpper > MAX_TICK) {
+    throw new Error(`Ticks out of range: tickLower=${tickLower}, tickUpper=${tickUpper}, MIN=${MIN_TICK}, MAX=${MAX_TICK}`);
+  }
+  
+  // Map fee tier to FeeAmount enum
+  let feeAmount: FeeAmount;
+  switch (feeTier) {
+    case 100:
+      feeAmount = FeeAmount.LOWEST; // 0.01%
+      break;
+    case 500:
+      feeAmount = FeeAmount.LOW; // 0.05%
+      break;
+    case 3000:
+      feeAmount = FeeAmount.MEDIUM; // 0.3%
+      break;
+    case 10000:
+      feeAmount = FeeAmount.HIGH; // 1%
+      break;
+    default:
+      // Default to MEDIUM if unknown
+      feeAmount = FeeAmount.MEDIUM;
+      console.warn(`Unknown fee tier ${feeTier}, defaulting to MEDIUM (3000)`);
+  }
   
   // Create a dummy pool with the current tick
   const sqrtPriceX96 = TickMath.getSqrtRatioAtTick(currentTick);
@@ -161,11 +210,13 @@ export function calculateTokenAmountsForLiquidity(
   const pool = new Pool(
     token0,
     token1,
-    FeeAmount.MEDIUM, // 3000 (0.3%)
+    feeAmount,
     sqrtPriceX96,
     liquidity,
     currentTick
   );
+  
+  console.log(`    Calculating amounts for ticks [${tickLower}, ${tickUpper}], currentTick=${currentTick}`);
   
   let amount0: bigint;
   let amount1: bigint;
