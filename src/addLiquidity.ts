@@ -60,6 +60,9 @@ export async function addLiquidity({
   }
 
   const rpcUrl = process.env.RPC_URL;
+  
+  // Get fee tier from environment or use default 0.01% (100 basis points)
+  const feeTier = process.env.FEE_TIER ? Number(process.env.FEE_TIER) : 100;
 
   // Get chain configuration
   const config = getChainConfig(chainId);
@@ -104,9 +107,9 @@ export async function addLiquidity({
       const [token0, token1] = sortTokens(wrappedToken, marketInfo.collateralToken);
       const isToken0Outcome = token0 === wrappedToken;
       
-      // Check if pool exists
+      // Check if pool exists with specified fee tier
       const poolAddress = await client.executeWithRetry(
-        () => client.getPool(token0, token1),
+        () => client.getPool(token0, token1, feeTier),
         3,
         1000
       );
@@ -118,7 +121,7 @@ export async function addLiquidity({
         console.log(`    Pool does not exist, will create at midpoint price`);
         
         // Get proper tick spacing based on fee tier
-        const tickSpacing = getTickSpacing(config.defaultFee, config);
+        const tickSpacing = getTickSpacing(feeTier, config);
         const { tickLower, tickUpper } = calculateTickBounds(
           priceMin,
           priceMax,
@@ -256,14 +259,16 @@ export async function addLiquidity({
           analysis,
           priceMin,
           priceMax,
-          slippage
+          slippage,
+          feeTier
         );
       } else {
         await addLiquidityToExistingPool(
           client,
           config,
           analysis,
-          slippage
+          slippage,
+          feeTier
         );
       }
     }
@@ -281,7 +286,8 @@ async function createAndAddLiquidity(
   analysis: PoolAnalysis,
   minPrice: number,
   maxPrice: number,
-  slippageTolerance: number
+  slippageTolerance: number,
+  feeTier: number
 ): Promise<void> {
   const { wrappedToken, collateralToken, amount0, amount1, tickLower, tickUpper, isToken0Outcome } = analysis;
   
@@ -300,17 +306,17 @@ async function createAndAddLiquidity(
   
   const sqrtPriceX96 = encodeSqrtPriceX96(initialPrice, decimals0, decimals1);
   
-  // Create pool
-  const createTx = await client.createPool(token0, token1, sqrtPriceX96, config.defaultFee);
+  // Create pool with specified fee tier
+  const createTx = await client.createPool(token0, token1, sqrtPriceX96, feeTier);
   await client.waitForTransaction(createTx);
   console.log(`    ✓ Pool created: ${config.explorerUrl}/tx/${createTx}`);
   
   // Wait for chain state to update
   await client.delay(RetryConfig.POOL_CREATION_DELAY);
   
-  // Get the pool address
+  // Get the pool address with specified fee tier
   const poolAddress = await client.executeWithRetry(
-    () => client.getPool(token0, token1, config.defaultFee),
+    () => client.getPool(token0, token1, feeTier),
     3,
     1000
   );
@@ -327,14 +333,15 @@ async function createAndAddLiquidity(
     poolAddress,
     exists: true,
     currentTick: priceToTick(initialPrice)
-  }, slippageTolerance);
+  }, slippageTolerance, feeTier);
 }
 
 async function addLiquidityToExistingPool(
   client: ContractClient,
   config: ChainConfig,
   analysis: PoolAnalysis,
-  slippageTolerance: number
+  slippageTolerance: number,
+  feeTier: number
 ): Promise<void> {
   const { 
     wrappedToken, 
@@ -433,7 +440,7 @@ async function addLiquidityToExistingPool(
     // Uniswap V3 format (includes fee)
     token0,
     token1,
-    fee: config.defaultFee,
+    fee: feeTier,
     tickLower,
     tickUpper,
     amount0Desired: amount0,
@@ -521,8 +528,10 @@ export async function checkCollateralSolvency(
       const [token0, token1] = sortTokens(wrappedToken, marketInfo.collateralToken);
       const isToken0Outcome = token0 === wrappedToken;
       
+      // Use default fee tier for solvency check (0.01%)
+      const feeTier = 100;
       const poolAddress = await client.executeWithRetry(
-        () => client.getPool(token0, token1),
+        () => client.getPool(token0, token1, feeTier),
         3,
         1000
       );
@@ -540,7 +549,7 @@ export async function checkCollateralSolvency(
           1000
         );
         
-        const tickSpacing = getTickSpacing(config.defaultFee, config);
+        const tickSpacing = getTickSpacing(feeTier, config);
         const { tickLower, tickUpper } = calculateTickBounds(
           minPrice,
           maxPrice,
