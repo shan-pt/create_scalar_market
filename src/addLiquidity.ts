@@ -160,23 +160,55 @@ export async function addLiquidity({
         console.log(`    Current tick: ${poolState.tick}`);
         console.log(`    Current liquidity: ${formatUnits(poolState.liquidity, 18)}`);
         
-        const { tickLower, tickUpper } = calculateTickBounds(
+        // Compute bounds in both token orientations and pick the one containing currentTick
+        const boundsOutcomeAsT0 = calculateTickBounds(
           priceMin,
           priceMax,
           poolState.tickSpacing,
-          isToken0Outcome
+          /* isToken0Outcome */ true
         );
+        const boundsOutcomeAsT1 = calculateTickBounds(
+          priceMin,
+          priceMax,
+          poolState.tickSpacing,
+          /* isToken0Outcome */ false
+        );
+
+        let chosenIsToken0Outcome = isToken0Outcome;
+        let bounds = isToken0Outcome ? boundsOutcomeAsT0 : boundsOutcomeAsT1;
+
+        const containsTick = (b: {tickLower:number; tickUpper:number}) => poolState.tick > b.tickLower && poolState.tick < b.tickUpper;
+
+        if (!containsTick(bounds)) {
+          const alt = isToken0Outcome ? boundsOutcomeAsT1 : boundsOutcomeAsT0;
+          if (containsTick(alt)) {
+            console.log(`    Switched token orientation to include current price: [${alt.tickLower}, ${alt.tickUpper}]`);
+            bounds = alt;
+            chosenIsToken0Outcome = !isToken0Outcome;
+          } else {
+            console.log(`    Current tick not inside either orientation bounds; proceeding with default.`);
+          }
+        }
         
+        // Use real token decimals to avoid amount mis-scaling
+        const decimals0 = await client.getTokenDecimals(token0);
+        const decimals1 = await client.getTokenDecimals(token1);
         const { amount0, amount1, collateralNeeded, outcomeNeeded } = calculateTokenAmountsForLiquidity(
           poolState.tick,
-          tickLower,
-          tickUpper,
+          bounds.tickLower,
+          bounds.tickUpper,
           collateralAmount,
-          isToken0Outcome,
+          chosenIsToken0Outcome,
           poolState.tickSpacing,
           config.chain.id,
-          feeTier
+          feeTier,
+          decimals0,
+          decimals1
         );
+        
+        // Sort tokens again if orientation flipped
+        const useOutcomeAsT0 = chosenIsToken0Outcome;
+        const [finalToken0, finalToken1] = useOutcomeAsT0 ? sortTokens(wrappedToken, marketInfo.collateralToken) : sortTokens(marketInfo.collateralToken, wrappedToken);
         
         analysis = {
           wrappedToken,
@@ -184,14 +216,18 @@ export async function addLiquidity({
           poolAddress,
           exists: true,
           currentTick: poolState.tick,
-          tickLower,
-          tickUpper,
-          isToken0Outcome,
+          tickLower: bounds.tickLower,
+          tickUpper: bounds.tickUpper,
+          isToken0Outcome: chosenIsToken0Outcome,
           collateralNeeded,
           outcomeNeeded,
           amount0,
           amount1
         };
+
+        // Override tokens in the outer scope to match the chosen orientation for approvals and mint
+        (analysis as any).token0 = finalToken0;
+        (analysis as any).token1 = finalToken1;
       }
       
       poolAnalyses.push(analysis);
@@ -296,15 +332,22 @@ async function createAndAddLiquidity(
   
   console.log('    Creating new pool...');
   
-  // Calculate initial price (midpoint of range)
-  const initialPrice = (minPrice + maxPrice) / 2;
-  console.log(`    Initial price: ${initialPrice.toFixed(4)}`);
+  // Calculate initial price (midpoint of range) in terms of token1 per token0
+  // IMPORTANT: Uniswap/Algebra expect price = token1/token0.
+  // Our min/max are expressed as collateral per outcome when token0 is outcome;
+  // if token0 is collateral, we must invert.
+  const midpointCollateralPerOutcome = (minPrice + maxPrice) / 2;
+  const isToken0Outcome = analysis.isToken0Outcome; // determined earlier from sorted addresses
+  const initialPriceToken1PerToken0 = isToken0Outcome
+    ? midpointCollateralPerOutcome              // token1 is collateral, token0 is outcome
+    : 1 / midpointCollateralPerOutcome;         // token1 is outcome, token0 is collateral
+  console.log(`    Initial price (token1/token0): ${initialPriceToken1PerToken0.toFixed(6)}`);
   
   // Get decimals for both tokens
   const decimals0 = await client.getTokenDecimals(token0);
   const decimals1 = await client.getTokenDecimals(token1);
   
-  const sqrtPriceX96 = encodeSqrtPriceX96(initialPrice, decimals0, decimals1);
+  const sqrtPriceX96 = encodeSqrtPriceX96(initialPriceToken1PerToken0, decimals0, decimals1);
   
   // Create pool with specified fee tier
   const createTx = await client.createPool(token0, token1, sqrtPriceX96, feeTier);
@@ -336,7 +379,10 @@ async function createAndAddLiquidity(
   
   console.log(`    Pool created with tick: ${poolState.tick}`);
   
-  // Recalculate amounts based on actual pool tick
+  // Now add liquidity to the newly created pool
+  // Use real decimals for follow-up amount calculation
+  const d0 = await client.getTokenDecimals(token0);
+  const d1 = await client.getTokenDecimals(token1);
   const { amount0: actualAmount0, amount1: actualAmount1 } = calculateTokenAmountsForLiquidity(
     poolState.tick,
     analysis.tickLower,
@@ -345,10 +391,11 @@ async function createAndAddLiquidity(
     analysis.isToken0Outcome,
     poolState.tickSpacing,
     config.chain.id,
-    feeTier
+    feeTier,
+    d0,
+    d1
   );
-  
-  // Now add liquidity to the newly created pool
+
   await addLiquidityToExistingPool(client, config, {
     ...analysis,
     poolAddress,

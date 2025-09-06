@@ -165,11 +165,13 @@ export function calculateTokenAmountsForLiquidity(
   isToken0Outcome: boolean,
   tickSpacing: number = 60,
   chainId: number = 8453,
-  feeTier: number = 3000
+  feeTier: number = 3000,
+  decimals0: number = 18,
+  decimals1: number = 18
 ): { amount0: bigint; amount1: bigint; collateralNeeded: bigint; outcomeNeeded: bigint } {
-  // Create dummy tokens for the calculation (addresses don't matter for math)
-  const token0 = new Token(chainId, '0x0000000000000000000000000000000000000001', 18, 'T0', 'Token0');
-  const token1 = new Token(chainId, '0x0000000000000000000000000000000000000002', 18, 'T1', 'Token1');
+  // Create tokens with REAL decimals for accurate math
+  const token0 = new Token(chainId, '0x0000000000000000000000000000000000000001', decimals0, 'T0', 'Token0');
+  const token1 = new Token(chainId, '0x0000000000000000000000000000000000000002', decimals1, 'T1', 'Token1');
   
   // Validate ticks
   if (tickLower >= tickUpper) {
