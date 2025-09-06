@@ -7,7 +7,7 @@ First, install the dependencies:
 yarn install
 ```
 
-Create Scalar Markets on Gnosis Chain
+Create Scalar Markets 
 
 ```bash
 yarn create-markets
