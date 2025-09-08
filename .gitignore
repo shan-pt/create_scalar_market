@@ -24,7 +24,7 @@ logs/
 artifacts/
 cache/
 coverage/
-createdMarkets.json
+
 .gitignore
 marketsLink.json
 marketProgress.json

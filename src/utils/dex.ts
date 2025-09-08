@@ -277,6 +277,188 @@ export function calculateTokenAmountsForLiquidity(
 }
 
 /**
+ * Calculate liquidity amounts given FIXED token supplies (after splitting)
+ * This is the efficient approach - we split exactly what user specifies,
+ * then calculate how much liquidity we can provide with those fixed amounts.
+ * 
+ * @param currentTick Current tick of the pool
+ * @param tickLower Lower tick of the desired range
+ * @param tickUpper Upper tick of the desired range
+ * @param availableCollateral Available collateral tokens (from user input)
+ * @param availableOutcome Available outcome tokens (from splitting)
+ * @param isToken0Outcome Whether token0 is the outcome token
+ * @param tickSpacing Tick spacing of the pool
+ * @param chainId Chain ID for creating token instances
+ * @param feeTier Fee tier of the pool
+ * @param decimals0 Decimals of token0
+ * @param decimals1 Decimals of token1
+ * @returns Actual amounts to use for liquidity provision
+ */
+export function calculateLiquidityFromFixedTokens(
+  currentTick: number,
+  tickLower: number,
+  tickUpper: number,
+  availableCollateral: bigint,
+  availableOutcome: bigint,
+  isToken0Outcome: boolean,
+  tickSpacing: number = 60,
+  chainId: number = 8453,
+  feeTier: number = 3000,
+  decimals0: number = 18,
+  decimals1: number = 18
+): { amount0: bigint; amount1: bigint; collateralUsed: bigint; outcomeUsed: bigint } {
+  // Create tokens with REAL decimals for accurate math
+  const token0 = new Token(chainId, '0x0000000000000000000000000000000000000001', decimals0, 'T0', 'Token0');
+  const token1 = new Token(chainId, '0x0000000000000000000000000000000000000002', decimals1, 'T1', 'Token1');
+  
+  // Validate ticks
+  if (tickLower >= tickUpper) {
+    throw new Error(`Invalid tick range in calculateLiquidityFromFixedTokens: tickLower=${tickLower} >= tickUpper=${tickUpper}`);
+  }
+  
+  // Ensure ticks are within valid range
+  const MIN_TICK = TickMath.MIN_TICK;
+  const MAX_TICK = TickMath.MAX_TICK;
+  if (tickLower < MIN_TICK || tickUpper > MAX_TICK) {
+    throw new Error(`Ticks out of range: tickLower=${tickLower}, tickUpper=${tickUpper}, MIN=${MIN_TICK}, MAX=${MAX_TICK}`);
+  }
+  
+  // Map fee tier to FeeAmount enum
+  let feeAmount: FeeAmount;
+  switch (feeTier) {
+    case 100:
+      feeAmount = FeeAmount.LOWEST;
+      break;
+    case 500:
+      feeAmount = FeeAmount.LOW;
+      break;
+    case 3000:
+      feeAmount = FeeAmount.MEDIUM;
+      break;
+    case 10000:
+      feeAmount = FeeAmount.HIGH;
+      break;
+    default:
+      feeAmount = FeeAmount.MEDIUM;
+      console.warn(`Unknown fee tier ${feeTier}, defaulting to MEDIUM (3000)`);
+  }
+  
+  // Create a dummy pool with the current tick
+  const sqrtPriceX96 = TickMath.getSqrtRatioAtTick(currentTick);
+  const liquidity = JSBI.BigInt(0);
+  const pool = new Pool(
+    token0,
+    token1,
+    feeAmount,
+    sqrtPriceX96,
+    liquidity,
+    currentTick
+  );
+  
+  console.log(`    Calculating liquidity from fixed tokens: collateral=${availableCollateral}, outcome=${availableOutcome}`);
+  
+  let amount0: bigint;
+  let amount1: bigint;
+  
+  if (currentTick < tickLower) {
+    // Price is below range - only need token0
+    if (isToken0Outcome) {
+      // Use all available outcome tokens
+      amount0 = availableOutcome;
+      amount1 = 0n;
+    } else {
+      // Use all available collateral tokens
+      amount0 = availableCollateral;
+      amount1 = 0n;
+    }
+  } else if (currentTick >= tickUpper) {
+    // Price is above range - only need token1
+    if (isToken0Outcome) {
+      // Use all available collateral tokens
+      amount0 = 0n;
+      amount1 = availableCollateral;
+    } else {
+      // Use all available outcome tokens
+      amount0 = 0n;
+      amount1 = availableOutcome;
+    }
+  } else {
+    // Price is within range - need both tokens
+    // Calculate the optimal ratio and use as much as possible within our constraints
+    
+    // First, calculate what the optimal ratio would be if we had unlimited tokens
+    const optimalPosition = isToken0Outcome
+      ? Position.fromAmount1({
+          pool,
+          tickLower,
+          tickUpper,
+          amount1: availableCollateral.toString()
+        })
+      : Position.fromAmount0({
+          pool,
+          tickLower,
+          tickUpper,
+          amount0: availableCollateral.toString(),
+          useFullPrecision: true
+        });
+    
+    const optimalAmount0 = BigInt(optimalPosition.mintAmounts.amount0.toString());
+    const optimalAmount1 = BigInt(optimalPosition.mintAmounts.amount1.toString());
+    
+    // Now constrain by our available tokens
+    if (isToken0Outcome) {
+      // token0 = outcome, token1 = collateral
+      // We're limited by min(availableOutcome, optimalAmount0) and min(availableCollateral, optimalAmount1)
+      const constrainedAmount0 = optimalAmount0 > availableOutcome ? availableOutcome : optimalAmount0;
+      const constrainedAmount1 = optimalAmount1 > availableCollateral ? availableCollateral : optimalAmount1;
+      
+      // If we're constrained by outcome tokens, recalculate based on that
+      if (constrainedAmount0 < optimalAmount0) {
+        const constrainedPosition = Position.fromAmount0({
+          pool,
+          tickLower,
+          tickUpper,
+          amount0: constrainedAmount0.toString(),
+          useFullPrecision: true
+        });
+        amount0 = BigInt(constrainedPosition.mintAmounts.amount0.toString());
+        amount1 = BigInt(constrainedPosition.mintAmounts.amount1.toString());
+      } else {
+        amount0 = constrainedAmount0;
+        amount1 = constrainedAmount1;
+      }
+    } else {
+      // token0 = collateral, token1 = outcome
+      const constrainedAmount0 = optimalAmount0 > availableCollateral ? availableCollateral : optimalAmount0;
+      const constrainedAmount1 = optimalAmount1 > availableOutcome ? availableOutcome : optimalAmount1;
+      
+      // If we're constrained by outcome tokens, recalculate based on that
+      if (constrainedAmount1 < optimalAmount1) {
+        const constrainedPosition = Position.fromAmount1({
+          pool,
+          tickLower,
+          tickUpper,
+          amount1: constrainedAmount1.toString()
+        });
+        amount0 = BigInt(constrainedPosition.mintAmounts.amount0.toString());
+        amount1 = BigInt(constrainedPosition.mintAmounts.amount1.toString());
+      } else {
+        amount0 = constrainedAmount0;
+        amount1 = constrainedAmount1;
+      }
+    }
+  }
+  
+  // Calculate actual usage
+  const collateralUsed = isToken0Outcome ? amount1 : amount0;
+  const outcomeUsed = isToken0Outcome ? amount0 : amount1;
+  
+  console.log(`    Will use: collateral=${collateralUsed}, outcome=${outcomeUsed}`);
+  
+  return { amount0, amount1, collateralUsed, outcomeUsed };
+}
+
+/**
  * Calculate total collateral needed for providing liquidity to multiple pools
  * @param poolRequirements Array of requirements for each pool
  * @param chainId Chain ID for token creation

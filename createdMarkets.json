@@ -1,0 +1,18 @@
+[
+  {
+    "repoPath": "value/savee",
+    "marketId": "0xbEC377Da983dFC82596D289f1Ed73b7b94f5d9e3",
+    "downToken": "VALUESAV_D",
+    "upToken": "VALUESAV_U",
+    "txHash": "0xc5d313eb84269e8d519c5a58148529cedc2208d8c5d8322d4cbd7b627ad012c3",
+    "timestamp": 1757355493406
+  },
+  {
+    "repoPath": "magic/hellodata",
+    "marketId": "0x90D03861c9B697E6cf8556B0e10B1e835A1ec2fC",
+    "downToken": "MAGICHEL_D",
+    "upToken": "MAGICHEL_U",
+    "txHash": "0x5a9d4bdc0d58ad9f3d141fcbf35572d8fb95995d96c99aa5b5a2791e74ffe94f",
+    "timestamp": 1757355496894
+  }
+]
