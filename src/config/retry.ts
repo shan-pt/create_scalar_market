@@ -25,7 +25,10 @@ export const RetryConfig = {
   OPERATION_DELAY: 200,
   
   // Delay after pool creation to ensure chain state updates
-  POOL_CREATION_DELAY: 2000,
+  POOL_CREATION_DELAY: 5000,
+  
+  // Delay after split operation to ensure token balances are updated
+  POST_SPLIT_DELAY: 3000,
   
   // Delay between processing multiple pools
   POOL_PROCESSING_DELAY: 1500

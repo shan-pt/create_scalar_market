@@ -20,6 +20,46 @@ import { RetryConfig, TimeConstants } from './config/retry';
 
 dotenv.config();
 
+/**
+ * Calculate complementary ranges for Down and Up pools
+ * For a given range [min, max], creates:
+ * - Down pool: [min, max] with initial price (min + max) / 2
+ * - Up pool: [1-max, 1-min] with initial price (1-max + 1-min) / 2
+ */
+function calculateComplementaryRanges(minPrice: number, maxPrice: number): PoolRangeConfig[] {
+  // Validate input range
+  if (minPrice >= maxPrice || minPrice < 0 || maxPrice > 1) {
+    throw new Error(`Invalid price range: [${minPrice}, ${maxPrice}]. Must be 0 <= min < max <= 1`);
+  }
+  
+  // Up pool uses the original range (swapped from previous logic)
+  const upRange: PoolRangeConfig = {
+    poolIndex: 1,
+    minPrice: minPrice,
+    maxPrice: maxPrice,
+    initialPrice: (minPrice + maxPrice) / 2,
+    poolName: 'Up'
+  };
+  
+  // Down pool uses the complement range: [1-max, 1-min] (swapped from previous logic)
+  const downMinPrice = 1 - maxPrice;
+  const downMaxPrice = 1 - minPrice;
+  const downRange: PoolRangeConfig = {
+    poolIndex: 0,
+    minPrice: downMinPrice,
+    maxPrice: downMaxPrice,
+    initialPrice: (downMinPrice + downMaxPrice) / 2,
+    poolName: 'Down'
+  };
+  
+  console.log(`\n📊 Calculated complementary ranges:`);
+  console.log(`  Down pool: [${downRange.minPrice.toFixed(3)}, ${downRange.maxPrice.toFixed(3)}] with initial price ${downRange.initialPrice.toFixed(3)}`);
+  console.log(`  Up pool:   [${upRange.minPrice.toFixed(3)}, ${upRange.maxPrice.toFixed(3)}] with initial price ${upRange.initialPrice.toFixed(3)}`);
+  console.log(`  Sum check: ${downRange.initialPrice.toFixed(3)} + ${upRange.initialPrice.toFixed(3)} = ${(downRange.initialPrice + upRange.initialPrice).toFixed(3)} (should be ~1.0)`);
+  
+  return [downRange, upRange];
+}
+
 interface LiquidityParams {
   marketAddress: `0x${string}`;
   collateralAmount: bigint;
@@ -27,6 +67,14 @@ interface LiquidityParams {
   maxPrice?: number;
   slippageTolerance?: number;
   chainId?: number;
+}
+
+interface PoolRangeConfig {
+  poolIndex: number;
+  minPrice: number;
+  maxPrice: number;
+  initialPrice: number;
+  poolName: string;
 }
 
 interface PoolAnalysis {
@@ -91,16 +139,21 @@ export async function addLiquidity({
     console.log(`  Condition ID: ${marketInfo.conditionId}`);
     console.log(`  Wrapped tokens: ${marketInfo.wrappedTokens.join(', ')}`);
 
+    // Calculate complementary ranges for Down and Up pools
+    const poolRanges = calculateComplementaryRanges(priceMin, priceMax);
+    
     // Analyze pools and calculate requirements
     console.log('\n2. Analyzing pools and calculating token requirements...');
     const poolAnalyses: PoolAnalysis[] = [];
     let totalCollateralNeeded = 0n;
     let totalOutcomeNeeded: bigint[] = [];
     
-    // Analyze first 2 pools (skip invalid result token)
+    // Analyze first 2 pools (skip invalid result token) with their respective ranges
     for (let i = 0; i < Math.min(2, marketInfo.wrappedTokens.length - 1); i++) {
       const wrappedToken = marketInfo.wrappedTokens[i];
-      console.log(`\n  Analyzing pool ${i + 1} for token ${wrappedToken}...`);
+      const poolRange = poolRanges[i];
+      console.log(`\n  Analyzing ${poolRange.poolName} pool (${i + 1}) for token ${wrappedToken}...`);
+      console.log(`    Range: [${poolRange.minPrice.toFixed(3)}, ${poolRange.maxPrice.toFixed(3)}] with initial price ${poolRange.initialPrice.toFixed(3)}`);
       
       // Sort tokens to get correct pool order
       const [token0, token1] = sortTokens(wrappedToken, marketInfo.collateralToken);
@@ -122,16 +175,40 @@ export async function addLiquidity({
         // Get proper tick spacing based on fee tier
         const tickSpacing = getTickSpacing(feeTier, config);
         const { tickLower, tickUpper } = calculateTickBounds(
-          priceMin,
-          priceMax,
+          poolRange.minPrice,
+          poolRange.maxPrice,
           tickSpacing,
           isToken0Outcome
         );
         
-        // For new pool at midpoint, we need roughly 50/50 split
-        const midPrice = (priceMin + priceMax) / 2;
-        const collateralForPool = collateralAmount * BigInt(Math.floor(midPrice * 1000)) / 1000n;
-        const outcomeForPool = collateralAmount * BigInt(Math.floor((1 - midPrice) * 1000)) / 1000n;
+        // For new pool, calculate amounts based on expected initial tick
+        const midPrice = poolRange.initialPrice;
+        
+        // Calculate expected initial tick from the midpoint price
+        const initialPriceToken1PerToken0 = isToken0Outcome
+          ? midPrice              // token1 is collateral, token0 is outcome
+          : 1 / midPrice;         // token1 is outcome, token0 is collateral
+        
+        // Convert price to tick (approximate)
+        const expectedTick = Math.floor(Math.log(initialPriceToken1PerToken0) / Math.log(1.0001));
+        
+        // Get token decimals for proper calculation
+        const decimals0 = await client.getTokenDecimals(token0);
+        const decimals1 = await client.getTokenDecimals(token1);
+        
+        // Use the proper liquidity calculation for new pools
+        const { amount0, amount1, collateralNeeded, outcomeNeeded } = calculateTokenAmountsForLiquidity(
+          expectedTick,
+          tickLower,
+          tickUpper,
+          collateralAmount,
+          isToken0Outcome,
+          tickSpacing,
+          config.chain.id,
+          feeTier,
+          decimals0,
+          decimals1
+        );
         
         analysis = {
           wrappedToken,
@@ -142,10 +219,10 @@ export async function addLiquidity({
           tickUpper,
           tickSpacing,
           isToken0Outcome,
-          collateralNeeded: collateralForPool,
-          outcomeNeeded: outcomeForPool,
-          amount0: isToken0Outcome ? outcomeForPool : collateralForPool,
-          amount1: isToken0Outcome ? collateralForPool : outcomeForPool
+          collateralNeeded,
+          outcomeNeeded,
+          amount0,
+          amount1
         };
       } else {
         // Pool exists - calculate based on current price
@@ -162,14 +239,14 @@ export async function addLiquidity({
         
         // Compute bounds in both token orientations and pick the one containing currentTick
         const boundsOutcomeAsT0 = calculateTickBounds(
-          priceMin,
-          priceMax,
+          poolRange.minPrice,
+          poolRange.maxPrice,
           poolState.tickSpacing,
           /* isToken0Outcome */ true
         );
         const boundsOutcomeAsT1 = calculateTickBounds(
-          priceMin,
-          priceMax,
+          poolRange.minPrice,
+          poolRange.maxPrice,
           poolState.tickSpacing,
           /* isToken0Outcome */ false
         );
@@ -269,8 +346,33 @@ export async function addLiquidity({
       await client.waitForTransaction(splitTx);
       console.log(`  ✓ Split transaction: ${config.explorerUrl}/tx/${splitTx}`);
       
-      // Wait for state to update
-      await new Promise(resolve => setTimeout(resolve, RetryConfig.POOL_CREATION_DELAY));
+      // Wait for state to update after split
+      await new Promise(resolve => setTimeout(resolve, RetryConfig.POST_SPLIT_DELAY));
+      
+      // Verify outcome tokens are available after split
+      console.log('  Verifying outcome token balances after split...');
+      for (let i = 0; i < poolAnalyses.length; i++) {
+        const analysis = poolAnalyses[i];
+        if (analysis.outcomeNeeded > 0n) {
+          await client.executeWithRetry(
+            async () => {
+              const balance = await client.getTokenBalance(
+                analysis.wrappedToken,
+                client.account.address
+              );
+              if (balance < analysis.outcomeNeeded) {
+                throw new Error(
+                  `Insufficient outcome token balance after split. Required: ${formatUnits(analysis.outcomeNeeded, 18)}, Available: ${formatUnits(balance, 18)}`
+                );
+              }
+              console.log(`    ✓ ${analysis.wrappedToken.slice(0, 8)}... balance: ${formatUnits(balance, 18)}`);
+              return balance;
+            },
+            5, // More retries for balance verification
+            2000 // Longer delay between retries
+          );
+        }
+      }
     } else {
       console.log('\n4. No split needed (pools out of range or already have outcome tokens)');
     }
@@ -293,8 +395,8 @@ export async function addLiquidity({
           client,
           config,
           analysis,
-          priceMin,
-          priceMax,
+          poolRanges[i].minPrice,
+          poolRanges[i].maxPrice,
           slippage,
           feeTier
         );
@@ -354,7 +456,7 @@ async function createAndAddLiquidity(
   await client.waitForTransaction(createTx);
   console.log(`    ✓ Pool created: ${config.explorerUrl}/tx/${createTx}`);
   
-  // Wait for chain state to update
+  // Wait for chain state to update after pool creation
   await client.delay(RetryConfig.POOL_CREATION_DELAY);
   
   // Get the pool address with specified fee tier
@@ -379,30 +481,20 @@ async function createAndAddLiquidity(
   
   console.log(`    Pool created with tick: ${poolState.tick}`);
   
-  // Now add liquidity to the newly created pool
-  // Use real decimals for follow-up amount calculation
-  const d0 = await client.getTokenDecimals(token0);
-  const d1 = await client.getTokenDecimals(token1);
-  const { amount0: actualAmount0, amount1: actualAmount1 } = calculateTokenAmountsForLiquidity(
-    poolState.tick,
-    analysis.tickLower,
-    analysis.tickUpper,
-    analysis.collateralNeeded,
-    analysis.isToken0Outcome,
-    poolState.tickSpacing,
-    config.chain.id,
-    feeTier,
-    d0,
-    d1
-  );
+  // Use the original amounts that were calculated and split
+  // Don't recalculate as this can lead to mismatches with available tokens
+  console.log(`    Using original calculated amounts:`);
+  console.log(`      Token0: ${formatUnits(analysis.amount0, 18)}`);
+  console.log(`      Token1: ${formatUnits(analysis.amount1, 18)}`);
 
   await addLiquidityToExistingPool(client, config, {
     ...analysis,
     poolAddress,
     exists: true,
     currentTick: poolState.tick,
-    amount0: actualAmount0,
-    amount1: actualAmount1
+    // Keep original amounts instead of recalculating
+    amount0: analysis.amount0,
+    amount1: analysis.amount1
   }, slippageTolerance, feeTier);
 }
 
@@ -477,6 +569,23 @@ async function addLiquidityToExistingPool(
   
   // Minimal delay before minting
   await client.delay(RetryConfig.OPERATION_DELAY);
+  
+  // Verify token balances before minting
+  console.log('    Verifying token balances before mint...');
+  const balance0 = await client.getTokenBalance(token0, client.account.address);
+  const balance1 = await client.getTokenBalance(token1, client.account.address);
+  
+  if (balance0 < amount0) {
+    throw new Error(
+      `Insufficient token0 balance. Required: ${formatUnits(amount0, 18)}, Available: ${formatUnits(balance0, 18)}`
+    );
+  }
+  if (balance1 < amount1) {
+    throw new Error(
+      `Insufficient token1 balance. Required: ${formatUnits(amount1, 18)}, Available: ${formatUnits(balance1, 18)}`
+    );
+  }
+  console.log(`    ✓ Token balances verified`);
   
   // Use appropriate ABI based on chain
   const positionManagerAbi = config.chain.id === 100 
@@ -596,11 +705,15 @@ export async function checkCollateralSolvency(
       throw new Error(`Markets use different collateral tokens: ${collateralToken} vs ${marketInfo.collateralToken}`);
     }
 
+    // Calculate complementary ranges for this market
+    const poolRanges = calculateComplementaryRanges(minPrice, maxPrice);
+    
     // Calculate requirements for each pool in this market (first 2 pools)
     let marketCollateralNeeded = 0n;
     
     for (let i = 0; i < Math.min(2, marketInfo.wrappedTokens.length - 1); i++) {
       const wrappedToken = marketInfo.wrappedTokens[i];
+      const poolRange = poolRanges[i];
       const [token0, token1] = sortTokens(wrappedToken, marketInfo.collateralToken);
       const isToken0Outcome = token0 === wrappedToken;
       
@@ -613,8 +726,8 @@ export async function checkCollateralSolvency(
       );
       
       if (!poolAddress) {
-        // New pool - estimate 50/50 split at midpoint
-        const midPrice = (minPrice + maxPrice) / 2;
+        // New pool - use the calculated initial price for this specific pool
+        const midPrice = poolRange.initialPrice;
         const collateralForPool = collateralAmount * BigInt(Math.floor(midPrice * 1000)) / 1000n;
         marketCollateralNeeded += collateralForPool;
       } else {
@@ -627,8 +740,8 @@ export async function checkCollateralSolvency(
         
         const tickSpacing = getTickSpacing(feeTier, config);
         const { tickLower, tickUpper } = calculateTickBounds(
-          minPrice,
-          maxPrice,
+          poolRange.minPrice,
+          poolRange.maxPrice,
           poolState.tickSpacing || tickSpacing,
           isToken0Outcome
         );
